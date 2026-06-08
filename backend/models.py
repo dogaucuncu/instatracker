@@ -1,4 +1,5 @@
-from pydantic import BaseModel
+import re
+from pydantic import BaseModel, field_validator
 from typing import Optional
 
 
@@ -6,14 +7,62 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("Kullanıcı adı boş olamaz.")
+        if len(v) > 30:
+            raise ValueError("Kullanıcı adı çok uzun.")
+        # Instagram usernames: letters, numbers, underscores, dots only
+        if not re.match(r'^[a-zA-Z0-9._]+$', v):
+            raise ValueError("Geçersiz kullanıcı adı formatı.")
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if not v:
+            raise ValueError("Şifre boş olamaz.")
+        if len(v) > 128:
+            raise ValueError("Şifre çok uzun.")
+        return v
+
 
 class TwoFARequest(BaseModel):
     code: str
+
+    @field_validator("code")
+    @classmethod
+    def validate_code(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r'^[0-9]{4,8}$', v):
+            raise ValueError("Doğrulama kodu sadece 4-8 haneli rakam olmalıdır.")
+        return v
 
 
 class UnfollowRequest(BaseModel):
     user_pk: str
     username: str
+
+    @field_validator("user_pk")
+    @classmethod
+    def validate_user_pk(cls, v: str) -> str:
+        v = v.strip()
+        if not re.match(r'^[0-9]+$', v):
+            raise ValueError("user_pk sadece rakamlardan oluşmalıdır.")
+        if len(v) > 20:
+            raise ValueError("user_pk çok uzun.")
+        return v
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, v: str) -> str:
+        v = v.strip()
+        if len(v) > 30:
+            raise ValueError("Kullanıcı adı çok uzun.")
+        return v
 
 
 class AccountInfo(BaseModel):

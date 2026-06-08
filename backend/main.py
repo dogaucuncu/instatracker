@@ -5,13 +5,14 @@ from pathlib import Path
 # Add backend dir to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 import database as db
 from config import FRONTEND_DIR, APP_NAME, APP_VERSION
+
 from routes.auth import router as auth_router
 from routes.tracker import router as scan_router
 from routes.dashboard import router as dashboard_router
@@ -24,18 +25,43 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ── App ───────────────────────────────────────────────────────────────────────
+# OpenAPI docs disabled — this is a local-only personal tool,
+# no need to expose interactive API documentation.
 app = FastAPI(
     title=APP_NAME,
     version=APP_VERSION,
     description="Instagram Takipçi Takip Sistemi",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
+# ── Security Headers Middleware ───────────────────────────────────────────────
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    response = await call_next(request)
+    # Prevent the browser from MIME-sniffing
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    # Block the page from being loaded in an iframe (clickjacking)
+    response.headers["X-Frame-Options"] = "DENY"
+    # Basic XSS protection for older browsers
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    # Only send referrer for same-origin requests
+    response.headers["Referrer-Policy"] = "same-origin"
+    return response
+
+# ── CORS ─────────────────────────────────────────────────────────────────────
+# Restricted to localhost only — this app is never meant to be
+# accessed from a remote origin.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Content-Type"],
 )
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -53,10 +79,22 @@ if FRONTEND_DIR.exists():
 
     @app.get("/{path:path}")
     def serve_spa(path: str):
-        """Serve frontend SPA for all non-API routes."""
-        file_path = FRONTEND_DIR / path
-        if file_path.exists() and file_path.is_file():
-            return FileResponse(str(file_path))
+        """Serve frontend SPA for all non-API routes.
+
+        Security: resolve the requested path and verify it stays inside
+        FRONTEND_DIR to prevent path-traversal attacks (e.g. /../../../etc/passwd).
+        """
+        try:
+            # Resolve to absolute path and confirm it is inside the frontend dir
+            requested = (FRONTEND_DIR / path).resolve()
+            if not str(requested).startswith(str(FRONTEND_DIR.resolve())):
+                # Path traversal attempt detected — return 404
+                return JSONResponse(status_code=404, content={"detail": "Not found"})
+        except Exception:
+            return JSONResponse(status_code=404, content={"detail": "Not found"})
+
+        if requested.exists() and requested.is_file():
+            return FileResponse(str(requested))
         return FileResponse(str(FRONTEND_DIR / "index.html"))
 
 

@@ -208,6 +208,21 @@ def get_previous_follower_snapshot_users() -> list[dict]:
         return [dict(r) for r in rows]
 
 
+def get_latest_following_snapshot_users() -> list[dict]:
+    """Return all users from the most recent following snapshot."""
+    with db() as conn:
+        snap = conn.execute(
+            "SELECT id FROM following_snapshots ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        if not snap:
+            return []
+        rows = conn.execute(
+            "SELECT user_pk, username, full_name, profile_pic_url FROM following WHERE snapshot_id=?",
+            (snap["id"],)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
 def get_snapshot_count() -> int:
     with db() as conn:
         row = conn.execute("SELECT COUNT(*) as c FROM follower_snapshots").fetchone()

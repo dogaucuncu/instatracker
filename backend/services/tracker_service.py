@@ -1,6 +1,9 @@
 import logging
+import time
+import random
 import database as db
 from services import instagram_service as ig
+from config import INTER_FETCH_MIN_DELAY, INTER_FETCH_MAX_DELAY
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,12 @@ def run_scan() -> dict:
         # ── 1. Fetch from Instagram ────────────────────────────────────────
         logger.info("[Scan %d] Fetching followers...", scan_id)
         current_followers = ig.get_followers()
+
+        # Pause between the two bulk enumerations so they don't read as one
+        # back-to-back scraping burst.
+        pause = random.uniform(INTER_FETCH_MIN_DELAY, INTER_FETCH_MAX_DELAY)
+        logger.info("[Scan %d] Pausing %.1fs before fetching following...", scan_id, pause)
+        time.sleep(pause)
 
         logger.info("[Scan %d] Fetching following...", scan_id)
         current_following = ig.get_following()

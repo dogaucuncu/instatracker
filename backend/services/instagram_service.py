@@ -1,6 +1,6 @@
 import time
-import random
 import logging
+from functools import wraps
 from typing import Optional
 from pathlib import Path
 
@@ -15,7 +15,20 @@ from instagrapi.exceptions import (
     PrivateError,
 )
 
-from config import SESSION_FILE, MIN_DELAY, MAX_DELAY
+from config import (
+    SESSION_FILE,
+    MIN_DELAY,
+    MAX_DELAY,
+    SCAN_MIN_DELAY,
+    SCAN_MAX_DELAY,
+    LOGIN_MIN_DELAY,
+    LOGIN_MAX_DELAY,
+    IG_DEVICE,
+    IG_LOCALE,
+    IG_COUNTRY,
+    IG_COUNTRY_CODE,
+    IG_TIMEZONE_OFFSET,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -29,40 +42,67 @@ _pending_challenge: dict = {}
 
 import json
 
+# device codenames known to be instagrapi's flagged default fingerprint
+_LEGACY_DEFAULT_DEVICES = {None, "", "devitron"}
+
+
+def _apply_ig_profile(cl: Client) -> None:
+    """Apply the stable Turkish-region Android fingerprint to a fresh client.
+
+    Order matters: locale must be set before the user agent is (re)generated,
+    otherwise the UA is stamped with instagrapi's default en_US locale.
+    """
+    cl.set_locale(IG_LOCALE)
+    cl.set_country(IG_COUNTRY)
+    cl.set_country_code(IG_COUNTRY_CODE)
+    cl.set_timezone_offset(IG_TIMEZONE_OFFSET)
+    cl.set_device(IG_DEVICE)
+    cl.set_user_agent()  # regenerate UA from IG_DEVICE + tr_TR locale
+
+
 def _new_client() -> Client:
-    """Create a new instagrapi Client with persistent device settings.
-    
-    Reusing the same device_id/phone_id/uuid across sessions prevents
-    Instagram from flagging each login as a 'new device'.
+    """Create a new instagrapi Client with a persistent, realistic device.
+
+    Reusing the same device_id/phone_id/uuid + a real Turkish Android
+    fingerprint across sessions makes Instagram treat the client as one
+    ordinary, already-known phone instead of a fresh bot on every login.
     """
     cl = Client()
-    cl.delay_range = [MIN_DELAY, MAX_DELAY]
+    # Interactive auth uses the short delays; scan/per-user functions
+    # temporarily switch to their own ranges via _with_delays.
+    cl.delay_range = [LOGIN_MIN_DELAY, LOGIN_MAX_DELAY]
     session_path = Path(SESSION_FILE)
+
     if session_path.exists():
         try:
             settings = json.loads(session_path.read_text())
-            # Only load device fingerprint fields, NOT auth/session tokens
-            device_keys = {"uuids", "device_settings", "country", "locale", "timezone_offset", "user_agent"}
+            device = settings.get("device_settings") or {}
+            is_legacy_default = device.get("device") in _LEGACY_DEFAULT_DEVICES
+            # Only load device fingerprint fields, NOT auth/session tokens.
+            device_keys = {
+                "uuids", "device_settings", "country", "country_code",
+                "locale", "timezone_offset", "user_agent",
+            }
             device_settings = {k: v for k, v in settings.items() if k in device_keys}
-            if device_settings:
+            if device_settings and not is_legacy_default:
                 cl.set_settings(device_settings)
-            logger.info("Loaded device settings (device_id=%s)", cl.android_device_id)
+                logger.info("Loaded persisted device (device_id=%s)", cl.android_device_id)
+                return cl
+            if is_legacy_default:
+                logger.info("Legacy default fingerprint detected — upgrading to Turkish Android profile.")
         except Exception as e:
             logger.warning("Failed to load device settings: %s", e)
-    else:
-        # First run: save newly generated device settings so they persist
-        try:
-            session_path.parent.mkdir(parents=True, exist_ok=True)
-            session_path.write_text(json.dumps(cl.get_settings()))
-            logger.info("Saved initial device settings (device_id=%s)", cl.android_device_id)
-        except Exception as e:
-            logger.warning("Failed to save initial device settings: %s", e)
-            
+
+    # First run (or legacy upgrade): seed the realistic profile and persist it.
+    _apply_ig_profile(cl)
+    try:
+        session_path.parent.mkdir(parents=True, exist_ok=True)
+        session_path.write_text(json.dumps(cl.get_settings(), indent=4))
+        logger.info("Seeded Turkish Android fingerprint (device_id=%s)", cl.android_device_id)
+    except Exception as e:
+        logger.warning("Failed to save initial device settings: %s", e)
+
     return cl
-
-
-def _random_delay():
-    time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
 
 def get_client() -> Optional[Client]:
@@ -84,24 +124,41 @@ def is_logged_in() -> bool:
 
 
 def load_session() -> bool:
-    """Try to load a saved session. Returns True if successful."""
+    """Reuse a saved session WITHOUT re-entering the password.
+
+    Repeated password logins are one of Instagram's strongest bot signals, so
+    on startup we load the saved auth token and merely validate it with a single
+    lightweight timeline request (exactly what the real app does when opened).
+    We never delete the session file here: even when the auth token has expired,
+    the persisted device fingerprint must survive so the next password login
+    comes from the same, already-known device.
+    """
     global _client
     if not SESSION_FILE.exists():
         return False
     try:
-        cl = _new_client()
+        cl = Client()
+        cl.delay_range = [LOGIN_MIN_DELAY, LOGIN_MAX_DELAY]
         cl.load_settings(str(SESSION_FILE))
-        cl.login(cl.username, cl.password)
+        if (cl.device_settings or {}).get("device") in _LEGACY_DEFAULT_DEVICES:
+            # Old session tied to instagrapi's flagged default device — force a
+            # fresh login so it is reseeded on the realistic Turkish fingerprint.
+            logger.info("Saved session uses legacy default device; forcing re-login to upgrade fingerprint.")
+            return False
+        if not cl.user_id:
+            # Only a device fingerprint was saved, no auth token yet.
+            logger.info("Saved session has no auth token; password login required.")
+            return False
+        # Validate the token without touching username/password.
+        cl.get_timeline_feed()
         _client = cl
-        logger.info("Session loaded successfully for @%s", cl.username)
+        logger.info("Session reused for user_id=%s (no re-login).", cl.user_id)
         return True
+    except LoginRequired:
+        logger.info("Saved session expired; password login required (device kept).")
+        return False
     except Exception as e:
-        logger.warning("Failed to load session: %s", e)
-        try:
-            SESSION_FILE.unlink(missing_ok=True)
-        except Exception:
-            pass
-        _client = None
+        logger.warning("Failed to reuse session: %s", e)
         return False
 
 
@@ -447,6 +504,31 @@ def get_account_info() -> dict:
     }
 
 
+def _with_delays(min_delay: float, max_delay: float):
+    """Run an Instagram operation with the given anti-bot delay_range.
+
+    The client's default delay_range is the short login one (interactive auth
+    must feel responsive). List pagination uses the moderate scan pacing, and
+    the sensitive per-user requests (status checks, unfollows) use the long
+    one. instagrapi sleeps this range before EVERY request, so no extra
+    explicit sleeps are needed on top.
+    """
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            if _client is None:
+                return func(*args, **kwargs)  # let the function raise "Not logged in"
+            previous = _client.delay_range
+            _client.delay_range = [min_delay, max_delay]
+            try:
+                return func(*args, **kwargs)
+            finally:
+                _client.delay_range = previous
+        return wrapper
+    return decorator
+
+
+@_with_delays(SCAN_MIN_DELAY, SCAN_MAX_DELAY)
 def get_followers() -> list[dict]:
     """
     Fetch the full follower list.
@@ -527,6 +609,7 @@ def get_followers() -> list[dict]:
     return users
 
 
+@_with_delays(SCAN_MIN_DELAY, SCAN_MAX_DELAY)
 def get_following() -> list[dict]:
     """
     Fetch the full following list.
@@ -607,6 +690,7 @@ def get_following() -> list[dict]:
     return users
 
 
+@_with_delays(MIN_DELAY, MAX_DELAY)
 def check_user_status(user_pk: str, username: str) -> str:
     """
     Check whether a user exists and is accessible.
@@ -614,7 +698,6 @@ def check_user_status(user_pk: str, username: str) -> str:
     """
     if not _client:
         raise RuntimeError("Not logged in")
-    _random_delay()
     try:
         info = _client.user_info(int(user_pk))
         if info:
@@ -640,12 +723,12 @@ def check_user_status(user_pk: str, username: str) -> str:
         return "active"
 
 
+@_with_delays(MIN_DELAY, MAX_DELAY)
 def unfollow_user(user_pk: str) -> bool:
     """Unfollow a user by pk. Returns True on success."""
     if not _client:
         raise RuntimeError("Not logged in")
     try:
-        _random_delay()
         result = _client.user_unfollow(int(user_pk))
         return result
     except Exception as e:

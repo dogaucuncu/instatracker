@@ -1,6 +1,11 @@
 # ── Sensitive data (NEVER push these!) ──────────────────────────────
-data/session.json        # Instagram session token
-data/instatracker.db     # SQLite database (contains follower data)
+# NOTE: git does not support inline comments in .gitignore — a trailing
+# "# ..." becomes part of the pattern and the line silently matches nothing.
+# Keep comments on their own lines.
+# Instagram session token:
+data/session.json
+# SQLite database (contains follower data):
+data/instatracker.db
 data/*.db
 data/*.json
 
@@ -40,3 +45,6 @@ Thumbs.db
 # ── Logs ─────────────────────────────────────────────────────────────
 *.log
 logs/
+
+# ── Claude Code (personal/local settings) ────────────────────────────
+.claude/settings.local.json

@@ -104,6 +104,12 @@ def scan():
     if not _check_login():
         return
 
+    try:
+        tracker_service.check_scan_allowed()
+    except tracker_service.ScanTooSoon as e:
+        console.print(f"[yellow]⏳ {e}[/]")
+        return
+
     console.print(Panel("[bold cyan]🔍 Tarama Başlatılıyor...[/]", box=box.ROUNDED))
     console.print("[dim]Bu işlem hesabınızdaki takipçi sayısına bağlı olarak birkaç dakika sürebilir.[/]\n")
 

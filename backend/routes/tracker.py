@@ -36,6 +36,11 @@ def start_scan(background_tasks: BackgroundTasks):
     if _scan_state["running"]:
         raise HTTPException(409, "Zaten bir tarama çalışıyor. Lütfen bekleyin.")
 
+    try:
+        tracker_service.check_scan_allowed()
+    except tracker_service.ScanTooSoon as e:
+        raise HTTPException(429, str(e))
+
     _scan_state = {"running": True, "result": None, "error": None}
     background_tasks.add_task(_do_scan)
 

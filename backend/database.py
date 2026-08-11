@@ -287,6 +287,41 @@ def update_event_still_following(user_pk: str, still_following: bool):
         )
 
 
+def sync_still_following(following_pks: set[str]) -> int:
+    """Re-derive still_following for *every* event from the current following list.
+
+    The scan can only refresh people it sees change in that one run, so anyone
+    who dropped out of the follower list in an earlier scan kept whatever flag
+    they were first recorded with — forever. Unfollowing them on the phone
+    never cleared the "Hala Takip Ediyorsunuz" warning, because no later scan
+    ever looked at them again.
+
+    Returns the number of rows whose flag actually changed.
+    """
+    with db() as conn:
+        conn.execute(
+            "CREATE TEMP TABLE _current_following (user_pk TEXT PRIMARY KEY)"
+        )
+        conn.executemany(
+            "INSERT OR IGNORE INTO _current_following (user_pk) VALUES (?)",
+            [(pk,) for pk in following_pks],
+        )
+        cur = conn.execute("""
+            UPDATE events
+               SET still_following = CASE
+                     WHEN user_pk IN (SELECT user_pk FROM _current_following) THEN 1
+                     ELSE 0
+                   END
+             WHERE still_following <> CASE
+                     WHEN user_pk IN (SELECT user_pk FROM _current_following) THEN 1
+                     ELSE 0
+                   END
+        """)
+        changed = cur.rowcount
+        conn.execute("DROP TABLE _current_following")
+        return changed
+
+
 def get_dashboard_stats() -> dict:
     with db() as conn:
         total_events = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
@@ -358,6 +393,25 @@ def get_scan_history(limit: int = 20) -> list[dict]:
             "SELECT * FROM scan_history ORDER BY id DESC LIMIT ?", (limit,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+def get_last_scan_time() -> str | None:
+    """ISO timestamp of the last request this app made to Instagram.
+
+    Every scan counts, whatever its status. A failed one still enumerated part
+    of the follower list, and a row left on 'running' means the process was
+    killed mid-scan — the moment when retrying immediately is most dangerous.
+
+    Prefers completed_at: scans take several minutes under the current pacing,
+    so measuring the cooldown from started_at would let the next one begin long
+    before the intended quiet period had actually elapsed.
+    """
+    with db() as conn:
+        row = conn.execute(
+            "SELECT COALESCE(completed_at, started_at) AS last_at "
+            "FROM scan_history ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        return row["last_at"] if row else None
 
 
 def get_current_scan() -> dict | None:

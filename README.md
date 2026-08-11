@@ -141,6 +141,7 @@ instatracker/
 │   │   ├── tracker.py           # Tarama endpoint'leri
 │   │   └── dashboard.py         # İstatistik endpoint'leri
 │   └── services/
+│       ├── ig_client.py         # Sertleştirilmiş instagrapi istemcisi (parmak izi/başlık düzeltmeleri)
 │       ├── instagram_service.py # Instagram API iletişimi (instagrapi)
 │       └── tracker_service.py   # Karşılaştırma & olay tespiti
 ├── frontend/
@@ -176,8 +177,9 @@ instatracker/
 - ✅ Tüm veriler **yalnızca kendi bilgisayarınızda** saklanır
 - ✅ Şifreniz hiçbir zaman veritabanına yazılmaz
 - ✅ Instagram oturumu `data/session.json` dosyasında yerel olarak tutulur
-- ✅ İstekler arasında **3–7 saniye** rastgele bekleme ile bot tespiti azaltılır
-- ✅ v1 API öncelikli, GraphQL yedek stratejisi ile güvenilir veri çekme
+- ✅ İstekler arasında rastgele bekleme, sayfalar arası "okuma molası" ve taramalar arasında zorunlu bekleme süresi ile bot tespiti azaltılır
+- ✅ Yalnızca mobil (private) API kullanılır; oturum çerezi hiçbir zaman web arayüzüne taşınmaz
+- ✅ TLS sertifikaları doğrulanır (işletim sistemi sertifika deposu + certifi)
 
 > **`data/` klasörü `.gitignore`'a eklenmiştir.** Oturum bilgileriniz ve takipçi verileriniz asla GitHub'a yüklenmez.
 

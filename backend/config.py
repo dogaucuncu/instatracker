@@ -22,11 +22,32 @@ PORT = int(os.getenv("PORT", 8000))
 FRONTEND_DIR = BASE_DIR / "frontend"
 
 # Pacing (seconds) between follower/following page fetches during a scan.
-# The real app fires these requests every ~1-2s while the user scrolls the
-# list, and instagrapi's own recommended delay_range is [1, 3] — so this keeps
-# a full scan fast while staying human-paced.
-SCAN_MIN_DELAY = 1.0
-SCAN_MAX_DELAY = 3.0
+# Each page carries FRIENDSHIP_PAGE_SIZE users, which is about as far as a
+# person scrolls in a few seconds, so this is roughly real-time.
+SCAN_MIN_DELAY = 2.0
+SCAN_MAX_DELAY = 5.0
+
+# Users per follower/following page. 200 is what both instagrapi and the
+# Android app request, and larger pages mean fewer requests for the same data.
+FRIENDSHIP_PAGE_SIZE = 200
+
+# Hard ceiling on pages per list, so a stuck cursor can never turn pagination
+# into an endless request loop. 200 pages x 200 users = 40k accounts, far above
+# anything this tool is meant for.
+MAX_FRIENDSHIP_PAGES = 200
+
+# Nobody scrolls a long list at a constant rate — every few pages a real user
+# stops to look at someone. Without this the request timing is a flat
+# distribution, which is trivial to spot server-side.
+SCAN_PAUSE_EVERY_PAGES = 3
+SCAN_PAUSE_MIN_DELAY = 8.0
+SCAN_PAUSE_MAX_DELAY = 20.0
+
+# Minimum gap between two full scans. Repeatedly enumerating the whole follower
+# and following list is the single behaviour most likely to earn the account a
+# multi-day "Daha Sonra Tekrar Dene" restriction, so the app refuses to do it
+# back-to-back. Set to 0 to disable the guard.
+MIN_SCAN_INTERVAL_MINUTES = 20
 
 # Longer pacing for the more sensitive per-user requests (status checks on
 # lost followers, unfollows). Individual user_info lookups are the calls that
@@ -44,8 +65,8 @@ LOGIN_MAX_DELAY = 2.5
 # Extra pause (seconds) between the followers fetch and the following fetch in
 # a single scan — like a user switching from the "followers" tab to the
 # "following" tab after a few seconds.
-INTER_FETCH_MIN_DELAY = 3.0
-INTER_FETCH_MAX_DELAY = 8.0
+INTER_FETCH_MIN_DELAY = 8.0
+INTER_FETCH_MAX_DELAY = 20.0
 
 # ── Instagram device fingerprint ─────────────────────────────────────────────
 # instagrapi's built-in default ("OnePlus 6T Dev / devitron", app v269, Android

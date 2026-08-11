@@ -1,10 +1,10 @@
 import time
+import random
 import logging
 from functools import wraps
 from typing import Optional
 from pathlib import Path
 
-from instagrapi import Client
 from instagrapi.exceptions import (
     LoginRequired,
     ChallengeRequired,
@@ -12,15 +12,25 @@ from instagrapi.exceptions import (
     UserNotFound,
     ClientError,
     ClientLoginRequired,
+    ClientThrottledError,
+    FeedbackRequired,
+    PleaseWaitFewMinutes,
     PrivateError,
+    RateLimitError,
 )
 
+from services.ig_client import HardenedClient
 from config import (
     SESSION_FILE,
     MIN_DELAY,
     MAX_DELAY,
     SCAN_MIN_DELAY,
     SCAN_MAX_DELAY,
+    SCAN_PAUSE_EVERY_PAGES,
+    SCAN_PAUSE_MIN_DELAY,
+    SCAN_PAUSE_MAX_DELAY,
+    FRIENDSHIP_PAGE_SIZE,
+    MAX_FRIENDSHIP_PAGES,
     LOGIN_MIN_DELAY,
     LOGIN_MAX_DELAY,
     IG_DEVICE,
@@ -32,8 +42,20 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# Instagram telling us to stop, or that the session is no longer valid. Never
+# swallow these: continuing past one is how a soft throttle becomes a multi-day
+# restriction.
+FATAL_SCAN_ERRORS = (
+    PleaseWaitFewMinutes,
+    ClientThrottledError,
+    RateLimitError,
+    FeedbackRequired,
+    ChallengeRequired,
+    LoginRequired,
+)
+
 # Global client instance
-_client: Optional[Client] = None
+_client: Optional[HardenedClient] = None
 # Store pending 2FA state
 _pending_2fa: dict = {}
 # Store pending challenge (device approval) state
@@ -46,7 +68,7 @@ import json
 _LEGACY_DEFAULT_DEVICES = {None, "", "devitron"}
 
 
-def _apply_ig_profile(cl: Client) -> None:
+def _apply_ig_profile(cl: HardenedClient) -> None:
     """Apply the stable Turkish-region Android fingerprint to a fresh client.
 
     Order matters: locale must be set before the user agent is (re)generated,
@@ -60,14 +82,17 @@ def _apply_ig_profile(cl: Client) -> None:
     cl.set_user_agent()  # regenerate UA from IG_DEVICE + tr_TR locale
 
 
-def _new_client() -> Client:
+def _new_client() -> HardenedClient:
     """Create a new instagrapi Client with a persistent, realistic device.
 
     Reusing the same device_id/phone_id/uuid + a real Turkish Android
     fingerprint across sessions makes Instagram treat the client as one
     ordinary, already-known phone instead of a fresh bot on every login.
     """
-    cl = Client()
+    # An explicit dict matters: instagrapi's Client(settings={}) default is a
+    # mutable class-level default, so without this every client would share
+    # (and pollute) the same settings dict.
+    cl = HardenedClient(settings={})
     # Interactive auth uses the short delays; scan/per-user functions
     # temporarily switch to their own ranges via _with_delays.
     cl.delay_range = [LOGIN_MIN_DELAY, LOGIN_MAX_DELAY]
@@ -79,9 +104,14 @@ def _new_client() -> Client:
             device = settings.get("device_settings") or {}
             is_legacy_default = device.get("device") in _LEGACY_DEFAULT_DEVICES
             # Only load device fingerprint fields, NOT auth/session tokens.
+            # "mid" belongs here too: it is Instagram's machine id for this
+            # install, so dropping it on every password login would make the
+            # phone look brand new no matter how stable the rest of the
+            # fingerprint is.
             device_keys = {
                 "uuids", "device_settings", "country", "country_code",
-                "locale", "timezone_offset", "user_agent",
+                "locale", "timezone_offset", "user_agent", "mid",
+                "ig_www_claim",
             }
             device_settings = {k: v for k, v in settings.items() if k in device_keys}
             if device_settings and not is_legacy_default:
@@ -105,7 +135,7 @@ def _new_client() -> Client:
     return cl
 
 
-def get_client() -> Optional[Client]:
+def get_client() -> Optional[HardenedClient]:
     return _client
 
 
@@ -137,7 +167,7 @@ def load_session() -> bool:
     if not SESSION_FILE.exists():
         return False
     try:
-        cl = Client()
+        cl = HardenedClient(settings={})
         cl.delay_range = [LOGIN_MIN_DELAY, LOGIN_MAX_DELAY]
         cl.load_settings(str(SESSION_FILE))
         if (cl.device_settings or {}).get("device") in _LEGACY_DEFAULT_DEVICES:
@@ -149,8 +179,11 @@ def load_session() -> bool:
             # Only a device fingerprint was saved, no auth token yet.
             logger.info("Saved session has no auth token; password login required.")
             return False
-        # Validate the token without touching username/password.
-        cl.get_timeline_feed()
+        # Validate the token without touching username/password. This is a warm
+        # start of the app, not a cold one — the feed is the first screen.
+        cl.reset_navigation()
+        cl.navigate("feed_timeline")
+        cl.get_timeline_feed("warm_start_fetch")
         _client = cl
         logger.info("Session reused for user_id=%s (no re-login).", cl.user_id)
         return True
@@ -528,166 +561,139 @@ def _with_delays(min_delay: float, max_delay: float):
     return decorator
 
 
-@_with_delays(SCAN_MIN_DELAY, SCAN_MAX_DELAY)
-def get_followers() -> list[dict]:
+def open_app() -> None:
+    """Load the timeline the way the app does when it is brought to the front.
+
+    A scan that opens with `friendships/<id>/followers/` as its very first
+    request looks nothing like a person using Instagram; a real session always
+    starts on the feed.
+
+    This doubles as a canary: if Instagram is already throttling or challenging
+    the account, it says so here, on one cheap request, and the caller must not
+    go on to enumerate the entire follower list.
     """
-    Fetch the full follower list.
-    Primary strategy: v1 API (200 per page, more reliable).
-    Fallback: GraphQL (if v1 returns suspiciously few results).
+    if not _client:
+        raise RuntimeError("Not logged in")
+    _client.reset_navigation()
+    _client.navigate("feed_timeline")
+    try:
+        _client.get_timeline_feed("warm_start_fetch")
+    except FATAL_SCAN_ERRORS:
+        raise
+    except Exception as e:
+        # Anything else here is cosmetic — a slow or empty feed is no reason to
+        # abandon a scan.
+        logger.warning("Timeline warm-up failed (continuing): %s", e)
+
+
+def _page_pause(page_index: int) -> None:
+    """Idle the way a person scrolling a long list does."""
+    if SCAN_PAUSE_EVERY_PAGES and page_index % SCAN_PAUSE_EVERY_PAGES == 0:
+        pause = random.uniform(SCAN_PAUSE_MIN_DELAY, SCAN_PAUSE_MAX_DELAY)
+        logger.info("Pausing %.1fs after %d pages", pause, page_index)
+        time.sleep(pause)
+
+
+def _extract_user(raw: dict) -> Optional[dict]:
+    """Pull the four fields we store out of a raw v1 user object.
+
+    Read straight from the JSON rather than through instagrapi's pydantic
+    models: a single unusual account in the list would otherwise raise a
+    validation error and lose the entire page.
+    """
+    pk = next(
+        (raw[key] for key in ("pk", "pk_id", "id") if raw.get(key) is not None),
+        None,
+    )
+    username = raw.get("username")
+    if pk is None or pk == "" or not username:
+        return None
+    return {
+        "pk": str(pk),
+        "username": username,
+        "full_name": raw.get("full_name") or "",
+        "profile_pic_url": raw.get("profile_pic_url"),
+    }
+
+
+def _fetch_friendship_list(kind: str) -> list[dict]:
+    """Page through followers/following on the private mobile API.
+
+    This deliberately does not use instagrapi's `user_followers_v1` helper and
+    has no web-API fallback. The helper returns a *list*, but the old code here
+    treated it as a dict of pk -> user; the resulting AttributeError was
+    swallowed by a broad `except`, so every scan silently paginated the whole
+    list twice — once over the mobile API, then again over the logged-out web
+    GraphQL endpoint with the mobile session cookie injected into a 2018
+    desktop-Safari user agent, retrying each dead query hash up to nine times.
+    That mismatched double enumeration is what earned the account its
+    "Daha Sonra Tekrar Dene" restrictions.
     """
     if not _client:
         raise RuntimeError("Not logged in")
 
-    user_id = _client.user_id
-    logger.info("Fetching followers via v1 API...")
+    _client.navigate(f"self_{kind}")
 
-    # ── Primary: v1 API ──────────────────────────────────────────────────
-    try:
-        users_map = _client.user_followers_v1(user_id, amount=0)  # 0 = all
-        result = [
-            {
-                "pk": str(pk),
-                "username": u.username,
-                "full_name": u.full_name or "",
-                "profile_pic_url": str(u.profile_pic_url) if u.profile_pic_url else None,
-            }
-            for pk, u in users_map.items()
-        ]
-        logger.info("Fetched %d followers via v1 API", len(result))
-        return result
-    except Exception as e:
-        logger.warning("v1 followers fetch failed, falling back to GraphQL: %s", e)
+    users: list[dict] = []
+    seen: set[str] = set()
+    seen_cursors: set[str] = set()
+    max_id = ""
+    page = 0
 
-    # ── Fallback: GraphQL ────────────────────────────────────────────────
-    try:
-        _client.inject_sessionid_to_public()
-    except Exception:
-        pass
+    while page < MAX_FRIENDSHIP_PAGES:
+        result = _client.private_request(
+            f"friendships/{_client.user_id}/{kind}/",
+            params={
+                "max_id": max_id,
+                "count": FRIENDSHIP_PAGE_SIZE,
+                "rank_token": _client.rank_token,
+                "search_surface": "follow_list_page",
+                "query": "",
+                "enable_groups": "true",
+            },
+        )
+        page += 1
 
-    users = []
-    variables = {
-        "id": str(user_id),
-        "include_reel": True,
-        "fetch_mutual": False,
-        "first": 50,
-    }
-    end_cursor = None
+        for raw in result.get("users") or []:
+            user = _extract_user(raw)
+            if user and user["pk"] not in seen:
+                seen.add(user["pk"])
+                users.append(user)
 
-    while True:
-        if end_cursor:
-            variables["after"] = end_cursor
-        try:
-            data = _client.public_graphql_request(
-                variables, query_hash="37479f2b8209594dde7facb0d904896a"
+        max_id = result.get("next_max_id")
+        if not max_id:
+            break
+        # A cursor we have already followed means the server is looping us.
+        # Without this the dedup above hides it: `users` stops growing while we
+        # keep re-requesting the same page forever.
+        max_id = str(max_id)
+        if max_id in seen_cursors:
+            logger.warning(
+                "Repeated %s cursor after %d page(s) — stopping pagination.", kind, page
             )
-        except Exception as e:
-            logger.error("GraphQL followers fetch error: %s", e)
             break
+        seen_cursors.add(max_id)
+        _page_pause(page)
+    else:
+        logger.warning(
+            "Hit the %d-page cap while fetching %s; list may be incomplete.",
+            MAX_FRIENDSHIP_PAGES, kind,
+        )
 
-        if not data.get("user"):
-            break
-
-        edge_followed_by = data["user"].get("edge_followed_by", {})
-        page_info = edge_followed_by.get("page_info", {})
-        edges = edge_followed_by.get("edges", [])
-
-        for edge in edges:
-            if "node" in edge:
-                node = edge["node"]
-                users.append({
-                    "pk": str(node.get("id")),
-                    "username": node.get("username"),
-                    "full_name": node.get("full_name") or "",
-                    "profile_pic_url": node.get("profile_pic_url"),
-                })
-
-        end_cursor = page_info.get("end_cursor")
-        if not page_info.get("has_next_page") or not end_cursor:
-            break
-
-    logger.info("Fetched %d followers via GraphQL (fallback)", len(users))
+    logger.info("Fetched %d %s across %d page(s)", len(users), kind, page)
     return users
+
+
+@_with_delays(SCAN_MIN_DELAY, SCAN_MAX_DELAY)
+def get_followers() -> list[dict]:
+    """Fetch the full follower list from the private mobile API."""
+    return _fetch_friendship_list("followers")
 
 
 @_with_delays(SCAN_MIN_DELAY, SCAN_MAX_DELAY)
 def get_following() -> list[dict]:
-    """
-    Fetch the full following list.
-    Primary strategy: v1 API (200 per page, more reliable).
-    Fallback: GraphQL (if v1 fails).
-    """
-    if not _client:
-        raise RuntimeError("Not logged in")
-
-    user_id = _client.user_id
-    logger.info("Fetching following via v1 API...")
-
-    # ── Primary: v1 API ──────────────────────────────────────────────────
-    try:
-        users_map = _client.user_following_v1(user_id, amount=0)  # 0 = all
-        result = [
-            {
-                "pk": str(pk),
-                "username": u.username,
-                "full_name": u.full_name or "",
-                "profile_pic_url": str(u.profile_pic_url) if u.profile_pic_url else None,
-            }
-            for pk, u in users_map.items()
-        ]
-        logger.info("Fetched %d following via v1 API", len(result))
-        return result
-    except Exception as e:
-        logger.warning("v1 following fetch failed, falling back to GraphQL: %s", e)
-
-    # ── Fallback: GraphQL ────────────────────────────────────────────────
-    try:
-        _client.inject_sessionid_to_public()
-    except Exception:
-        pass
-
-    users = []
-    variables = {
-        "id": str(user_id),
-        "include_reel": True,
-        "fetch_mutual": False,
-        "first": 50,
-    }
-    end_cursor = None
-
-    while True:
-        if end_cursor:
-            variables["after"] = end_cursor
-        try:
-            data = _client.public_graphql_request(
-                variables, query_hash="58712303d941c6855d4e888c5f0cd22f"
-            )
-        except Exception as e:
-            logger.error("GraphQL following fetch error: %s", e)
-            break
-
-        if not data.get("user"):
-            break
-
-        edge_follow = data["user"].get("edge_follow", {})
-        page_info = edge_follow.get("page_info", {})
-        edges = edge_follow.get("edges", [])
-
-        for edge in edges:
-            if "node" in edge:
-                node = edge["node"]
-                users.append({
-                    "pk": str(node.get("id")),
-                    "username": node.get("username"),
-                    "full_name": node.get("full_name") or "",
-                    "profile_pic_url": node.get("profile_pic_url"),
-                })
-
-        end_cursor = page_info.get("end_cursor")
-        if not page_info.get("has_next_page") or not end_cursor:
-            break
-
-    logger.info("Fetched %d following via GraphQL (fallback)", len(users))
-    return users
+    """Fetch the full following list from the private mobile API."""
+    return _fetch_friendship_list("following")
 
 
 @_with_delays(MIN_DELAY, MAX_DELAY)
@@ -695,11 +701,24 @@ def check_user_status(user_pk: str, username: str) -> str:
     """
     Check whether a user exists and is accessible.
     Returns: 'active' | 'blocked' | 'deactivated'
+
+    Uses `user_info_v1` rather than `user_info`, because the latter tries the
+    logged-out web GraphQL API first and, when that fails, injects the mobile
+    session id into the web session to retry — two extra requests per checked
+    user, on a surface this account has no business touching.
+
+    Known limitation: over the mobile API alone, a user who blocked us and a
+    user whose account no longer exists are indistinguishable — both answer 404
+    on `users/<pk>/info/`. Telling them apart needs a logged-out profile fetch,
+    which is exactly the web-API mixing that gets this account restricted, so
+    both are reported as 'deactivated'. 'blocked' is still reached for accounts
+    that went private on us, which the API does report distinctly.
     """
     if not _client:
         raise RuntimeError("Not logged in")
+    _client.navigate("profile")
     try:
-        info = _client.user_info(int(user_pk))
+        info = _client.user_info_v1(int(user_pk))
         if info:
             return "active"
         return "active"

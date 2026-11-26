@@ -6,6 +6,7 @@ from typing import Optional
 from pathlib import Path
 
 from instagrapi.exceptions import (
+    ClientNeedsUpgradeError,
     LoginRequired,
     ChallengeRequired,
     TwoFactorRequired,
@@ -82,6 +83,77 @@ def _apply_ig_profile(cl: HardenedClient) -> None:
     cl.set_user_agent()  # regenerate UA from IG_DEVICE + tr_TR locale
 
 
+# The three fields that identify one Instagram build. They are persisted inside
+# data/session.json, so bumping IG_DEVICE in config.py alone changes nothing for
+# an install that already has a session file: the old values would be loaded back
+# and Instagram would keep answering "update required".
+_APP_KEYS = ("app_version", "version_code", "bloks_versioning_id")
+
+
+def _sync_app_version(cl: HardenedClient) -> bool:
+    """Move a loaded device profile onto the app build configured in IG_DEVICE.
+
+    Only the app build changes. The uuids / device_id / phone_id / mid that make
+    this "the same phone" are left alone. Returns True when anything changed.
+    """
+    device = dict(cl.device_settings or {})
+    wanted = {k: IG_DEVICE[k] for k in _APP_KEYS if IG_DEVICE.get(k)}
+    if all(device.get(k) == v for k, v in wanted.items()):
+        return False
+    device.update(wanted)
+    cl.device_settings = device
+    cl.bloks_versioning_id = device.get("bloks_versioning_id")
+    cl.settings["device_settings"] = device
+    cl.set_user_agent()  # rebuilds the UA from device_settings + locale
+    logger.info("Updated persisted device profile to Instagram %s", device.get("app_version"))
+    return True
+
+
+# Instagram answers HTTP 400 with error_type "needs_upgrade" and a
+# plain-language Turkish message when it refuses the login request itself. The
+# wording talks about updating Instagram, which reads as if the user's phone
+# were out of date — it never is. Matching the reply lets the UI say what
+# actually has to change.
+_VERSION_REJECTED_HINTS = (
+    "güncel değil",
+    "yeni sürüme",
+    "update the app",
+    "update your app",
+    "not up to date",
+    "out of date",
+)
+
+# Two different things produce this reply, and from the outside they look the
+# same, so the message has to name both:
+#
+#  * Wrong username or password. instagrapi logs in through Instagram's Bloks
+#    CAA flow; when those credentials are refused it retries the old
+#    accounts/login/ endpoint, which Instagram has retired and answers with
+#    needs_upgrade — so a simple typo surfaces as a version complaint.
+#  * instagrapi really is too old. The app build it claims to be
+#    (config.py IG_DEVICE, read from the library itself) comes from the
+#    installed version, and Instagram stops accepting old builds.
+VERSION_REJECTED_MESSAGE = (
+    "Instagram giriş isteğini reddetti. Mesajı uygulama sürümünden şikâyet "
+    "ediyor ama telefonundaki Instagram'la ilgisi yok. İki olasılık var: "
+    "(1) kullanıcı adı veya şifre hatalı — önce bunu kontrol et; "
+    "(2) instagrapi sürümü eskidi, bu durumda "
+    "`py -3.10 -m pip install -U instagrapi` ile güncelleyip sunucuyu "
+    "yeniden başlat."
+)
+
+
+def _is_version_rejection(message: str, error_type: str = "") -> bool:
+    """True when Instagram refused the login request as an outdated client."""
+    lowered = (error_type or "").lower()
+    # "needs_upgrade" is what Instagram actually sends; "update" covers the
+    # older wording.
+    if "upgrade" in lowered or "update" in lowered:
+        return True
+    text = (message or "").lower()
+    return any(hint in text for hint in _VERSION_REJECTED_HINTS)
+
+
 def _new_client() -> HardenedClient:
     """Create a new instagrapi Client with a persistent, realistic device.
 
@@ -116,6 +188,12 @@ def _new_client() -> HardenedClient:
             device_settings = {k: v for k, v in settings.items() if k in device_keys}
             if device_settings and not is_legacy_default:
                 cl.set_settings(device_settings)
+                if _sync_app_version(cl):
+                    # Write the new build back, keeping every other key in the
+                    # file (auth token, cookies) exactly as it was.
+                    settings["device_settings"] = cl.device_settings
+                    settings["user_agent"] = cl.user_agent
+                    session_path.write_text(json.dumps(settings, indent=4))
                 logger.info("Loaded persisted device (device_id=%s)", cl.android_device_id)
                 return cl
             if is_legacy_default:
@@ -170,6 +248,7 @@ def load_session() -> bool:
         cl = HardenedClient(settings={})
         cl.delay_range = [LOGIN_MIN_DELAY, LOGIN_MAX_DELAY]
         cl.load_settings(str(SESSION_FILE))
+        _sync_app_version(cl)  # a saved session may predate the current build
         if (cl.device_settings or {}).get("device") in _LEGACY_DEFAULT_DEVICES:
             # Old session tied to instagrapi's flagged default device — force a
             # fresh login so it is reseeded on the realistic Turkish fingerprint.
@@ -206,6 +285,7 @@ def login(username: str, password: str) -> dict:
     """
     global _client, _pending_2fa, _pending_challenge
     cl = _new_client()
+    logger.info("Login attempt using: %s", cl.user_agent)
     try:
         cl.login(username, password)
         _client = cl
@@ -282,8 +362,28 @@ def login(username: str, password: str) -> dict:
             "challenge_type": "device",
             "message": "Instagram başka bir cihazdan onay istiyor. Telefonunuzdaki Instagram bildirimini onaylayın, ardından 'Devam Et' butonuna basın.",
         }
+    except ClientNeedsUpgradeError as e:
+        # instagrapi 3.x raises this for error_type=needs_upgrade; no need to
+        # dig through last_json to recognise it.
+        logger.error("Instagram refused the login request as outdated: %s", e)
+        return {"status": "error", "message": f"{VERSION_REJECTED_MESSAGE} Instagram'ın cevabı: {e}"}
     except Exception as e:
         logger.error("Login error: %s", e)
+        # What Instagram actually answered (message / error_type). Contains no
+        # credentials, and tells apart "app version rejected" from other causes.
+        last = getattr(cl, "last_json", None)
+        error_type = ""
+        if isinstance(last, dict) and last:
+            keep = ("message", "error_type", "error_title", "error_body", "status")
+            status_code = getattr(getattr(cl, "last_response", None), "status_code", None)
+            logger.error(
+                "Instagram answered HTTP %s: %s",
+                status_code,
+                {k: last.get(k) for k in keep if k in last},
+            )
+            error_type = str(last.get("error_type") or "")
+        if _is_version_rejection(str(e), error_type):
+            return {"status": "error", "message": f"{VERSION_REJECTED_MESSAGE} Instagram'ın cevabı: {e}"}
         return {"status": "error", "message": str(e)}
 
 

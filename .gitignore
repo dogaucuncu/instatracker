@@ -48,3 +48,6 @@ logs/
 
 # ── Claude Code (personal/local settings) ────────────────────────────
 .claude/settings.local.json
+
+# Yerel yapay zekâ asistanı dosyaları (yayımlanmaz)
+CLAUDE.md

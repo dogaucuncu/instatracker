@@ -2,260 +2,252 @@
 <html lang="tr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>InstaTracker — Instagram Takipçi Takip</title>
-  <meta name="description" content="Instagram hesabınızı takip edin: sizi takipten çıkanları, engelleyenleri ve hesabını kapatanları tespit edin." />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>InstaTracker — takipçi kaydı</title>
+  <meta name="description" content="Instagram hesabını takip bırakanları, engelleyenleri ve hesabını kapatanları tarihli bir kayıt olarak tutar. Veriler yalnızca bu bilgisayarda saklanır." />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="theme-color" content="#15171C" />
+  <!-- The typeface is served from this project, not from a font CDN: a CDN
+       would learn the reader's IP on every open and the tool would lose its
+       typeface offline. See frontend/css/style.css. -->
+  <link rel="preload" href="/static/fonts/PublicSans-Regular.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="/static/css/style.css" />
 </head>
 <body>
 
-<!-- ══════════════════════ LOGIN SCREEN ══════════════════════ -->
-<div id="login-screen" class="login-screen hidden">
-  <div class="login-card">
-    <div class="login-logo">
-      <div class="logo-icon">
-        <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <rect x="2" y="2" width="20" height="20" rx="6" stroke="currentColor" stroke-width="2"/>
-          <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/>
-          <circle cx="17.5" cy="6.5" r="1.5" fill="currentColor"/>
-        </svg>
-      </div>
-      <h1>InstaTracker</h1>
-      <p>Instagram Takipçi Analiz Sistemi</p>
+<!-- ═══ Icon set ═══════════════════════════════════════════════════════════
+     One family, drawn on a 24px grid with a single stroke weight, so no icon
+     looks borrowed from somewhere else. Decorative uses carry aria-hidden;
+     where an icon is the only label, the control has an aria-label.
+════════════════════════════════════════════════════════════════════════════ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-mark" viewBox="0 0 24 24">
+      <path d="M5 4h11l3 3v13H5z" />
+      <path d="M8 10h8M8 14h8M8 18h5" />
+    </symbol>
+    <symbol id="i-scan" viewBox="0 0 24 24">
+      <path d="M20 7a8 8 0 1 0 1.6 7" />
+      <path d="M20 3v4h-4" />
+    </symbol>
+    <symbol id="i-open" viewBox="0 0 24 24">
+      <path d="M12 4 3 20h18z" />
+      <path d="M12 10v4M12 17h.01" />
+    </symbol>
+    <symbol id="i-settled" viewBox="0 0 24 24">
+      <path d="M4 12.5 9 18 20 6" />
+    </symbol>
+    <symbol id="i-link" viewBox="0 0 24 24">
+      <path d="M13 4h7v7" />
+      <path d="M20 4 10 14" />
+      <path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5" />
+    </symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24">
+      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" />
+      <circle cx="12" cy="12" r="3" />
+    </symbol>
+    <symbol id="i-eye-off" viewBox="0 0 24 24">
+      <path d="M4 5l16 14" />
+      <path d="M9.5 7A10.6 10.6 0 0 1 12 6.7c6.5 0 10 5.3 10 5.3a18 18 0 0 1-3 3.4" />
+      <path d="M6.2 8.5A17.7 17.7 0 0 0 2 12s3.5 5.3 10 5.3a10 10 0 0 0 3.4-.6" />
+    </symbol>
+    <symbol id="i-info" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 11v6M12 8h.01" />
+    </symbol>
+  </defs>
+</svg>
+
+<a class="skip-link" href="#main">İçeriğe geç</a>
+
+<!-- ═══ Sign in ════════════════════════════════════════════════════════════ -->
+<div id="gate" class="gate hidden">
+  <main class="gate-card">
+    <div class="gate-head">
+      <h1 class="gate-title">InstaTracker</h1>
+      <p class="gate-sub">Takipçi kaydını tutmak için Instagram hesabına bağlan.</p>
     </div>
 
-    <div id="login-form-area">
-      <form id="login-form" autocomplete="off">
-        <div class="form-group">
-          <label for="inp-username">Kullanıcı Adı</label>
-          <input type="text" id="inp-username" placeholder="instagram_kullanici_adi" autocomplete="off" />
+    <!-- Password sign in -->
+    <div id="step-password">
+      <form id="form-login" novalidate>
+        <div class="field">
+          <label for="inp-username">Kullanıcı adı</label>
+          <input
+            type="text" id="inp-username" name="username"
+            autocomplete="username" autocapitalize="none" spellcheck="false"
+            required aria-describedby="login-error" />
         </div>
-        <div class="form-group">
+        <div class="field">
           <label for="inp-password">Şifre</label>
-          <div class="password-wrap">
-            <input type="password" id="inp-password" placeholder="••••••••" autocomplete="new-password" />
-            <button type="button" id="toggle-pw" class="toggle-pw-btn">👁</button>
+          <div class="with-affix">
+            <!-- current-password, not new-password: this is a sign-in field, so
+                 the reader's password manager must be able to fill it. -->
+            <input
+              type="password" id="inp-password" name="password"
+              autocomplete="current-password" required aria-describedby="login-error" />
+            <button type="button" id="btn-reveal" class="affix-btn"
+                    aria-label="Şifreyi göster" aria-pressed="false">
+              <svg class="icon" aria-hidden="true"><use href="#i-eye" /></svg>
+            </button>
           </div>
         </div>
-        <button type="submit" id="btn-login" class="btn btn-primary btn-full">
-          <span class="btn-text">Giriş Yap</span>
-          <span class="btn-spinner hidden"></span>
-        </button>
+        <button type="submit" id="btn-login" class="btn btn-primary btn-full">Giriş yap</button>
       </form>
     </div>
 
-    <!-- 2FA Form -->
-    <div id="twofa-form-area" class="hidden">
-      <div class="twofa-info">
-        <div class="twofa-icon">📱</div>
-        <h3>İki Faktörlü Doğrulama</h3>
-        <p>SMS veya Instagram uygulamasından gelen <strong>6 haneli kodu</strong> girin.</p>
-        <p style="margin-top:8px;color:var(--text-muted);font-size:12px;">
-          ℹ Kod yerine telefona <strong>bildirim geldiyse</strong> → bildirimi onaylayın, ardından aşağıdaki butona basın.
-        </p>
+    <!-- Verification code -->
+    <div id="step-code" class="hidden">
+      <div class="notice">
+        <p class="notice-title">İki adımlı doğrulama</p>
+        <p>SMS ile ya da Instagram uygulamasından gelen 6 haneli kodu gir.</p>
+        <p>Kod yerine telefonuna bildirim geldiyse onu onayla, sonra aşağıdaki ikinci düğmeyi kullan.</p>
       </div>
-      <form id="twofa-form">
-        <div class="form-group">
-          <label for="inp-2fa">Doğrulama Kodu</label>
-          <input type="text" id="inp-2fa" placeholder="123456" maxlength="6" inputmode="numeric" />
+      <form id="form-code" novalidate>
+        <div class="field">
+          <label for="inp-code">Doğrulama kodu</label>
+          <input
+            type="text" id="inp-code" name="one-time-code"
+            inputmode="numeric" autocomplete="one-time-code" spellcheck="false"
+            maxlength="8" required aria-describedby="login-error" />
         </div>
-        <button type="submit" id="btn-2fa" class="btn btn-primary btn-full">
-          <span class="btn-text">Kodu Doğrula</span>
-          <span class="btn-spinner hidden"></span>
-        </button>
+        <button type="submit" id="btn-code" class="btn btn-primary btn-full">Kodu doğrula</button>
       </form>
-      <div style="margin-top:12px;border-top:1px solid var(--border);padding-top:12px;">
-        <p style="font-size:12px;color:var(--text-muted);margin-bottom:8px;text-align:center;">— veya telefon bildirimi onayladıysanız —</p>
-        <button type="button" id="btn-device-approved" class="btn btn-ghost btn-full">
-          <span class="btn-text">🔔 Bildirimi Onayladım, Devam Et</span>
-          <span class="btn-spinner hidden"></span>
-        </button>
-      </div>
-      <button type="button" id="btn-back-login" class="btn btn-ghost btn-full" style="margin-top:8px">← Geri Dön</button>
+      <p class="divider">veya</p>
+      <button type="button" id="btn-approved-code" class="btn btn-full">Bildirimi onayladım, devam et</button>
+      <button type="button" id="btn-back-code" class="btn btn-quiet btn-full">Şifre ekranına dön</button>
     </div>
 
-    <!-- Device Challenge Form -->
-    <div id="challenge-form-area" class="hidden">
-      <div class="twofa-info">
-        <div class="twofa-icon">🔔</div>
-        <h3>Cihaz Onayı Gerekiyor</h3>
-        <p>Instagram, telefonunuza bir <strong>bildirim gönderdi</strong>. Instagram uygulamasını açın ve <strong>"Bu Benim"</strong> veya <strong>"Onayla"</strong> butonuna basın.</p>
-        <p style="margin-top:10px;color:var(--alert);font-size:12px;">Onayladıktan sonra aşağıdaki butona basın.</p>
+    <!-- Device approval -->
+    <div id="step-device" class="hidden">
+      <div class="notice">
+        <p class="notice-title">Cihaz onayı bekleniyor</p>
+        <p>Instagram telefonuna bir bildirim gönderdi. Instagram uygulamasını aç ve girişi onayla.</p>
+        <p>Onayladıktan sonra aşağıdaki düğmeye bas.</p>
       </div>
-      <button type="button" id="btn-challenge-continue" class="btn btn-primary btn-full">
-        <span class="btn-text">✓ Onayladım, Devam Et</span>
-        <span class="btn-spinner hidden"></span>
-      </button>
-      <button type="button" id="btn-challenge-back" class="btn btn-ghost btn-full" style="margin-top:8px">← Geri Dön</button>
+      <button type="button" id="btn-approved-device" class="btn btn-primary btn-full">Onayladım, devam et</button>
+      <button type="button" id="btn-back-device" class="btn btn-quiet btn-full">Şifre ekranına dön</button>
     </div>
 
-    <div id="login-error" class="login-error hidden"></div>
+    <div id="login-error" class="error hidden" role="alert"></div>
 
-    <p class="login-warning">
-      ⚠ Bu uygulama yalnızca kişisel kullanım içindir. Tüm veriler yerel olarak saklanır.
+    <p class="fineprint">
+      Kişisel kullanım için. Şifren bu bilgisayardan çıkmaz, kayıtlar yalnızca burada saklanır.
     </p>
-  </div>
-</div>
-
-<!-- ══════════════════════ MAIN APP ══════════════════════ -->
-<div id="app" class="hidden">
-
-  <!-- Top Navigation -->
-  <header class="topbar">
-    <div class="topbar-left">
-      <div class="logo-small">
-        <svg viewBox="0 0 24 24" fill="none">
-          <rect x="2" y="2" width="20" height="20" rx="6" stroke="currentColor" stroke-width="2.5"/>
-          <circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2.5"/>
-          <circle cx="17.5" cy="6.5" r="1.5" fill="currentColor"/>
-        </svg>
-        <span>InstaTracker</span>
-      </div>
-    </div>
-    <div class="topbar-right">
-      <div class="account-chip" id="account-chip">
-        <img id="account-avatar" src="" alt="avatar" class="account-avatar" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 40 40%22><circle cx=%2220%22 cy=%2220%22 r=%2220%22 fill=%22%23444%22/></svg>'" />
-        <div class="account-info">
-          <span id="account-username" class="account-username">@username</span>
-          <span id="account-fullname" class="account-fullname">Ad Soyad</span>
-        </div>
-      </div>
-      <button id="btn-logout" class="btn btn-ghost btn-sm">Çıkış</button>
-    </div>
-  </header>
-
-  <!-- Main Content -->
-  <main class="main-content">
-
-    <!-- Stats Row -->
-    <section class="stats-section">
-      <div class="stat-card" id="stat-followers">
-        <div class="stat-icon">👥</div>
-        <div class="stat-body">
-          <div class="stat-value" id="val-followers">—</div>
-          <div class="stat-label">Takipçi</div>
-        </div>
-      </div>
-      <div class="stat-card" id="stat-following">
-        <div class="stat-icon">👣</div>
-        <div class="stat-body">
-          <div class="stat-value" id="val-following">—</div>
-          <div class="stat-label">Takip</div>
-        </div>
-      </div>
-      <div class="stat-card stat-card--danger" id="stat-unfollowed">
-        <div class="stat-icon">👋</div>
-        <div class="stat-body">
-          <div class="stat-value" id="val-unfollowed">—</div>
-          <div class="stat-label">Takipten Çıkan</div>
-        </div>
-      </div>
-      <div class="stat-card stat-card--warning" id="stat-blocked">
-        <div class="stat-icon">🚫</div>
-        <div class="stat-body">
-          <div class="stat-value" id="val-blocked">—</div>
-          <div class="stat-label">Engelleyen</div>
-        </div>
-      </div>
-      <div class="stat-card stat-card--muted" id="stat-deactivated">
-        <div class="stat-icon">⛔</div>
-        <div class="stat-body">
-          <div class="stat-value" id="val-deactivated">—</div>
-          <div class="stat-label">Hesap Kapatan</div>
-        </div>
-      </div>
-      <div class="stat-card stat-card--alert" id="stat-still-following">
-        <div class="stat-icon">⚠️</div>
-        <div class="stat-body">
-          <div class="stat-value" id="val-still-following">—</div>
-          <div class="stat-label">Hala Takip Ettiklerim</div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Scan Bar -->
-    <section class="scan-bar">
-      <div class="scan-bar-left">
-        <span class="last-scan-label">Son tarama:</span>
-        <span id="last-scan-time" class="last-scan-time">Henüz taranmadı</span>
-      </div>
-      <div class="scan-bar-right">
-        <button id="btn-scan" class="btn btn-scan">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-            <polyline points="23 4 23 10 17 10"></polyline>
-            <polyline points="1 20 1 14 7 14"></polyline>
-            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
-          </svg>
-          <span id="btn-scan-text">Şimdi Tara</span>
-        </button>
-      </div>
-    </section>
-
-    <!-- Scan Progress -->
-    <div id="scan-progress" class="scan-progress hidden">
-      <div class="scan-progress-bar">
-        <div class="scan-progress-fill"></div>
-      </div>
-      <p id="scan-progress-msg" class="scan-progress-msg">Tarama devam ediyor...</p>
-    </div>
-
-    <!-- Tabs -->
-    <section class="tabs-section">
-      <div class="tabs-nav" role="tablist">
-        <button class="tab-btn active" data-tab="unfollowers" role="tab">
-          👋 Takipten Çıkanlar
-          <span class="tab-badge" id="badge-unfollowers">0</span>
-        </button>
-        <button class="tab-btn" data-tab="blockers" role="tab">
-          🚫 Engelleyenler
-          <span class="tab-badge" id="badge-blockers">0</span>
-        </button>
-        <button class="tab-btn" data-tab="deactivated" role="tab">
-          ⛔ Hesap Kapatanlar
-          <span class="tab-badge" id="badge-deactivated">0</span>
-        </button>
-        <button class="tab-btn" data-tab="new-followers" role="tab">
-          🆕 Yeni Takipçiler
-          <span class="tab-badge" id="badge-new-followers">0</span>
-        </button>
-        <button class="tab-btn" data-tab="scan-history" role="tab">
-          🕐 Tarama Geçmişi
-        </button>
-      </div>
-
-      <!-- Tab Panels -->
-      <div class="tab-content">
-        <div class="tab-panel active" id="panel-unfollowers"></div>
-        <div class="tab-panel" id="panel-blockers"></div>
-        <div class="tab-panel" id="panel-deactivated"></div>
-        <div class="tab-panel" id="panel-new-followers"></div>
-        <div class="tab-panel" id="panel-scan-history"></div>
-      </div>
-    </section>
-
   </main>
 </div>
 
-<!-- ══════════════════════ CONFIRM MODAL ══════════════════════ -->
-<div id="confirm-modal" class="modal-overlay hidden">
-  <div class="modal-card">
-    <div class="modal-icon">⚠️</div>
-    <h3 id="modal-title">Emin misiniz?</h3>
-    <p id="modal-message">Bu işlemi onaylıyor musunuz?</p>
-    <div class="modal-actions">
-      <button id="modal-cancel" class="btn btn-ghost">İptal</button>
-      <button id="modal-confirm" class="btn btn-danger">Takipten Çık</button>
+<!-- ═══ Register ═══════════════════════════════════════════════════════════ -->
+<div id="app" class="hidden">
+  <header class="masthead">
+    <p class="wordmark" translate="no">
+      <svg class="icon" aria-hidden="true"><use href="#i-mark" /></svg>
+      InstaTracker
+    </p>
+    <div class="whoami">
+      <!-- src is set once the account is known, so no broken-image request fires. -->
+      <img id="whoami-avatar" class="whoami-avatar" alt="" width="32" height="32" hidden />
+      <span>
+        <span id="whoami-handle" class="whoami-handle"></span>
+        <span id="whoami-name" class="whoami-name"></span>
+      </span>
+      <button type="button" id="btn-logout" class="btn btn-quiet">Çıkış</button>
+    </div>
+  </header>
+
+  <main id="main" class="page">
+    <section class="verdict">
+      <h1 class="verdict-line" id="verdict">
+        <span class="hero-count" id="hero-count">—</span>
+        <span id="hero-text">Kayıtlar yükleniyor.</span>
+      </h1>
+      <div class="verdict-aside">
+        <p class="scanned-at">Son tarama: <span id="scanned-at">—</span></p>
+        <button type="button" id="btn-scan" class="btn btn-primary">
+          <svg class="icon" aria-hidden="true"><use href="#i-scan" /></svg>
+          <span id="btn-scan-label">Şimdi tara</span>
+        </button>
+      </div>
+    </section>
+
+    <dl class="facts">
+      <div class="fact">
+        <dt class="fact-label">Takipçi</dt>
+        <dd class="fact-value" id="fact-followers">—</dd>
+      </div>
+      <div class="fact">
+        <dt class="fact-label">Takip edilen</dt>
+        <dd class="fact-value" id="fact-following">—</dd>
+      </div>
+      <div class="fact">
+        <dt class="fact-label">Engelleyen</dt>
+        <dd class="fact-value" id="fact-blocked">—</dd>
+      </div>
+      <div class="fact">
+        <dt class="fact-label">Hesabını kapatan</dt>
+        <dd class="fact-value" id="fact-deactivated">—</dd>
+      </div>
+      <div class="fact fact--open">
+        <dt class="fact-label">Hâlâ takip ettiğin</dt>
+        <dd class="fact-value" id="fact-still-following">—</dd>
+      </div>
+    </dl>
+
+    <!-- A progress report, so it is announced once when it changes. -->
+    <p id="scan-state" class="scan-state hidden" role="status">
+      <span class="track" aria-hidden="true"></span>
+      <span id="scan-msg">Tarama sürüyor.</span>
+    </p>
+
+    <h2 class="sr-only">Kayıtlar</h2>
+    <div class="tabs" role="tablist" aria-label="Kayıt türleri">
+      <button type="button" class="tab" role="tab" id="tab-unfollowers"
+              aria-controls="panel-unfollowers" aria-selected="true" tabindex="0">
+        Ayrılanlar <span class="tab-count" id="count-unfollowers">0</span>
+      </button>
+      <button type="button" class="tab" role="tab" id="tab-blockers"
+              aria-controls="panel-blockers" aria-selected="false" tabindex="-1">
+        Engelleyenler <span class="tab-count" id="count-blockers">0</span>
+      </button>
+      <button type="button" class="tab" role="tab" id="tab-deactivated"
+              aria-controls="panel-deactivated" aria-selected="false" tabindex="-1">
+        Kapatanlar <span class="tab-count" id="count-deactivated">0</span>
+      </button>
+      <button type="button" class="tab" role="tab" id="tab-new-followers"
+              aria-controls="panel-new-followers" aria-selected="false" tabindex="-1">
+        Yeni takipçiler <span class="tab-count" id="count-new-followers">0</span>
+      </button>
+      <button type="button" class="tab" role="tab" id="tab-scan-history"
+              aria-controls="panel-scan-history" aria-selected="false" tabindex="-1">
+        Tarama geçmişi
+      </button>
+    </div>
+
+    <div class="panel" role="tabpanel" id="panel-unfollowers" aria-labelledby="tab-unfollowers" tabindex="0"></div>
+    <div class="panel hidden" role="tabpanel" id="panel-blockers" aria-labelledby="tab-blockers" tabindex="0"></div>
+    <div class="panel hidden" role="tabpanel" id="panel-deactivated" aria-labelledby="tab-deactivated" tabindex="0"></div>
+    <div class="panel hidden" role="tabpanel" id="panel-new-followers" aria-labelledby="tab-new-followers" tabindex="0"></div>
+    <div class="panel hidden" role="tabpanel" id="panel-scan-history" aria-labelledby="tab-scan-history" tabindex="0"></div>
+  </main>
+</div>
+
+<!-- ═══ Confirmation ═══════════════════════════════════════════════════════ -->
+<div id="scrim" class="scrim hidden">
+  <div class="dialog" role="dialog" aria-modal="true"
+       aria-labelledby="dialog-title" aria-describedby="dialog-body">
+    <h2 class="dialog-title" id="dialog-title">Takibi bırak</h2>
+    <p class="dialog-body" id="dialog-body"></p>
+    <div class="dialog-actions">
+      <button type="button" id="btn-dialog-cancel" class="btn">Vazgeç</button>
+      <button type="button" id="btn-dialog-confirm" class="btn btn-signal">Takibi bırak</button>
     </div>
   </div>
 </div>
 
-<!-- Toast Container -->
-<div id="toast-container" class="toast-container"></div>
+<!-- Announced as it arrives, without moving focus. -->
+<div id="toasts" class="toasts" role="status"></div>
 
 <script src="/static/js/api.js"></script>
-<script src="/static/js/charts.js"></script>
 <script src="/static/js/app.js"></script>
 </body>
 </html>

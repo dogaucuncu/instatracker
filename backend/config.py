@@ -69,19 +69,16 @@ INTER_FETCH_MIN_DELAY = 8.0
 INTER_FETCH_MAX_DELAY = 20.0
 
 # ── Instagram device fingerprint ─────────────────────────────────────────────
-# instagrapi's built-in default ("OnePlus 6T Dev / devitron", app v269, Android
-# 8, en_US) is the single most-flagged bot signature on Instagram — every
-# uncustomized instagrapi login uses it. We replace it with a real, internally
-# consistent Turkish-region Android device so logins look like an ordinary phone.
+# instagrapi's built-in default device ("Pixel 8 Pro / husky", en_US) is the
+# most-flagged bot signature on Instagram — every uncustomized instagrapi login
+# uses it. We replace the hardware half with a real, internally consistent
+# Turkish-region Android phone so logins look like an ordinary device.
 # NOTE: instagrapi can only impersonate Android, not iOS, so an iPhone account
 # will still see this as a "new Android device" on first login (approve once).
-# Values below are taken verbatim from a real captured Instagram-for-Android
-# user agent (Samsung Galaxy S23+, Android 14, app 309.0.0.40.113) so the
-# app_version + version_code pair stays internally consistent. Only the model
-# is set to the international variant (SM-S916B, same "dm2q" codename) instead
-# of the US carrier one, to match a Turkish user's phone.
-IG_DEVICE = {
-    "app_version": "309.0.0.40.113",
+# This block (Samsung Galaxy S23+, Android 14) is a real captured profile; only
+# the model is set to the international variant (SM-S916B, same "dm2q"
+# codename) instead of the US carrier one, to match a Turkish user's phone.
+IG_HARDWARE = {
     "android_version": 34,
     "android_release": "14",
     "dpi": "510dpi",
@@ -90,8 +87,40 @@ IG_DEVICE = {
     "device": "dm2q",
     "model": "SM-S916B",
     "cpu": "qcom",
-    "version_code": "536988425",
 }
+
+# ── Instagram app build ──────────────────────────────────────────────────────
+# app_version, version_code and bloks_versioning_id are ONE unit: all three
+# have to come from the same real Instagram build. Writing them out by hand is
+# how this broke before — an app_version carrying a second build's version code
+# and a third build's Bloks hash, which Instagram answers with "Kullandığın
+# Instagram sürümü güncel değil" (error_type needs_upgrade).
+#
+# So they are not written here at all: they are read from instagrapi, which
+# ships the build it is actually tested against and bumps it every release.
+# That makes the build impossible to mismatch, and `pip install -r
+# requirements.txt` after a version bump is all that keeps it current.
+try:
+    from instagrapi import config as _ig_config
+
+    _APP_BUILD = {
+        k: v
+        for k, v in _ig_config.APP_SETTINGS[_ig_config.DEFAULT_APP_VERSION].items()
+        if k in ("app_version", "version_code", "bloks_versioning_id")
+    }
+except Exception:  # pragma: no cover - only if the library moves its table
+    # instagrapi 3.1.0's shipped default, kept verbatim so config stays
+    # importable if a future release renames APP_SETTINGS.
+    _APP_BUILD = {
+        "app_version": "449.0.0.52.84",
+        "version_code": "1079242191",
+        "bloks_versioning_id": (
+            "799db3e387d7a21a19c72918b8698b6cd28a1516ade363792c100ed45a0f9f0b"
+        ),
+    }
+
+IG_DEVICE = {**IG_HARDWARE, **_APP_BUILD}
+
 IG_LOCALE = "tr_TR"
 IG_COUNTRY = "TR"
 IG_COUNTRY_CODE = 90

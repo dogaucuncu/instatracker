@@ -1,14 +1,32 @@
-fastapi>=0.110.0
-uvicorn[standard]>=0.29.0
-instagrapi==2.6.9
+# Exact versions, not ranges.
+#
+# With ranges, start.bat installed whatever happened to be newest that day, so
+# two machines (or the same machine a month apart) ran different code, and a
+# dependency audit could only check the newest release rather than what is
+# actually installed. These pins are the versions this project was last run and
+# tested against. Dependabot is enabled on the repository and raises a pull
+# request per update, which is where version bumps belong.
+
+fastapi==0.135.1
+uvicorn[standard]==0.48.0
+
+# instagrapi 3.x is required, not optional: Instagram retired the legacy
+# POST /api/v1/accounts/login/ endpoint that 2.x logs in with, and now answers
+# it with HTTP 400 "needs_upgrade" whatever app version the client claims. 3.x
+# logs in through Instagram's current Bloks/CAA flow instead. Every release also
+# carries the Instagram app build that config.py's IG_DEVICE reads from the
+# library, so bumping this is how that build stays current.
+instagrapi==3.1.0
+
 # Imported directly by services/ig_client.py to build the TLS trust store,
 # so it must be declared rather than relied on as a requests transitive dep.
-certifi>=2024.2.2
-pydantic>=2.7.1,<3.0.0
-pydantic-settings>=2.0.0
-python-dotenv>=1.0.0
-rich>=13.0.0
-click>=8.1.0
-python-multipart>=0.0.9
-aiofiles>=23.0.0
-pillow>=10.0.0
+certifi==2026.10.23
+
+pydantic==2.13.4
+pydantic-settings==2.14.1
+python-dotenv==1.2.2
+rich==15.0.0
+click==8.4.1
+python-multipart==0.0.30
+aiofiles==25.1.0
+pillow==12.2.0

@@ -1,0 +1,14 @@
+# Development-only dependencies. Not installed by start.bat, which keeps the
+# runtime install as small as what the app actually needs.
+#
+#   py -3.10 -m pip install -r backend/requirements-dev.txt --trusted-host pypi.org --trusted-host files.pythonhosted.org
+#
+# The --trusted-host flags are needed on this machine because Norton re-signs
+# HTTPS and pip verifies against certifi alone; see start.bat, which passes the
+# same flags for the runtime requirements.
+
+-r requirements.txt
+
+# Runs backend/tests. .claude/verify.sh calls it after every change, so the
+# Stop hook can only pass when the suite does.
+pytest==9.1.1

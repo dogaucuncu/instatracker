@@ -85,10 +85,14 @@ if FRONTEND_DIR.exists():
         FRONTEND_DIR to prevent path-traversal attacks (e.g. /../../../etc/passwd).
         """
         try:
-            # Resolve to absolute path and confirm it is inside the frontend dir
-            requested = (FRONTEND_DIR / path).resolve()
-            if not str(requested).startswith(str(FRONTEND_DIR.resolve())):
-                # Path traversal attempt detected — return 404
+            # Resolve to an absolute path and confirm it is inside the frontend
+            # directory. is_relative_to() compares whole path components, where
+            # a string prefix test would also accept a sibling directory whose
+            # name merely starts with the same characters ("frontend-backup").
+            root = FRONTEND_DIR.resolve()
+            requested = (root / path).resolve()
+            if not requested.is_relative_to(root):
+                # Path traversal attempt — say nothing about what is there.
                 return JSONResponse(status_code=404, content={"detail": "Not found"})
         except Exception:
             return JSONResponse(status_code=404, content={"detail": "Not found"})

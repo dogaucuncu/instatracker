@@ -30,4 +30,4 @@ click==8.4.1
 # but it is imported on startup. 0.0.30 carried two advisories; 0.0.32 has none.
 python-multipart==0.0.32
 aiofiles==25.1.0
-pillow==12.2.0
+pillow==13.0.0

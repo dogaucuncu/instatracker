@@ -7,6 +7,7 @@ from pathlib import Path
 
 from instagrapi.exceptions import (
     ClientNeedsUpgradeError,
+    SentryBlock,
     LoginRequired,
     ChallengeRequired,
     TwoFactorRequired,
@@ -822,6 +823,15 @@ def check_user_status(user_pk: str, username: str) -> str:
         if info:
             return "active"
         return "active"
+    except (*FATAL_SCAN_ERRORS, SentryBlock):
+        # These say nothing about this person; they say Instagram wants the
+        # whole session to stop. Every one of them is a PrivateError subclass,
+        # so without this clause the branch below caught them and reported
+        # "blocked": a throttle or an expired session mid-scan turned everyone
+        # still to be checked into a false "Engelleyen" record, and the scan
+        # carried on sending requests to an account that had just been told
+        # to slow down.
+        raise
     except UserNotFound:
         return "deactivated"
     except PrivateError:
@@ -840,6 +850,47 @@ def check_user_status(user_pk: str, username: str) -> str:
     except Exception as e:
         logger.warning("Error checking user %s: %s", username, e)
         return "active"
+
+
+@_with_delays(MIN_DELAY, MAX_DELAY)
+def confirms_unfollow(user_pk: str, username: str) -> Optional[bool]:
+    """Ask Instagram directly whether this person still follows us.
+
+    Absence from one follower enumeration is not proof that someone left: the
+    paged listing occasionally omits an account that is still there, and that
+    single miss used to become a permanent "unfollowed" record. friendships/show
+    answers the question outright instead of inferring it from a list.
+
+    Returns True when Instagram says they no longer follow us, False when they
+    still do, and None when the question could not be answered — the caller
+    must treat None as "do not record anything", because a failed check is not
+    evidence of a departure.
+    """
+    if not _client:
+        raise RuntimeError("Not logged in")
+    _client.navigate("profile")
+    # The endpoint is called directly rather than through instagrapi's
+    # user_friendship_v1(), which catches every ClientError and returns None.
+    # Throttles, challenges and expired sessions are all ClientError
+    # subclasses, so through that wrapper "Instagram told us to stop" became
+    # "could not verify" — and the scan carried on firing requests at an
+    # account that had just been told to slow down.
+    try:
+        result = _client.private_request(
+            f"friendships/show/{int(user_pk)}/",
+            params={"is_external_deeplink_profile_view": "false"},
+        )
+    except FATAL_SCAN_ERRORS:
+        raise
+    except Exception as e:
+        logger.warning("Friendship check failed for @%s: %s", username, e)
+        return None
+
+    followed_by = result.get("followed_by") if isinstance(result, dict) else None
+    if not isinstance(followed_by, bool):
+        logger.warning("Friendship check for @%s carried no usable followed_by", username)
+        return None
+    return not followed_by
 
 
 @_with_delays(MIN_DELAY, MAX_DELAY)

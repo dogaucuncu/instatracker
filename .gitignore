@@ -2,12 +2,14 @@
 # NOTE: git does not support inline comments in .gitignore — a trailing
 # "# ..." becomes part of the pattern and the line silently matches nothing.
 # Keep comments on their own lines.
-# Instagram session token:
-data/session.json
-# SQLite database (contains follower data):
-data/instatracker.db
-data/*.db
-data/*.json
+# Everything the app writes at runtime lives in data/: the Instagram session
+# token, the follower database, and whatever SQLite creates beside it. The
+# folder is ignored as a whole and only .gitkeep is let back in. Listing files
+# by name missed SQLite's write-ahead log (instatracker.db-wal / -shm), which
+# holds recent follower data and is left behind whenever the server is stopped
+# without a clean close — this repository is public.
+data/*
+!data/.gitkeep
 
 # ── Python ───────────────────────────────────────────────────────────
 __pycache__/

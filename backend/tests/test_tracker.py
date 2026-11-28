@@ -42,6 +42,12 @@ def scan_env(monkeypatch):
                         lambda: [users[p] for p in state["following"]])
     monkeypatch.setattr(instagram_service, "check_user_status",
                         lambda pk, username: "active")
+    # Instagram's own answer to "does this person still follow me". Default
+    # True = confirmed gone, which is what the pre-existing tests assume; the
+    # confirmation tests below override it per case.
+    confirm = {"answer": True}
+    monkeypatch.setattr(instagram_service, "confirms_unfollow",
+                        lambda pk, username: confirm["answer"])
     # The rate guard has its own test below; here it would block every scan
     # after the first one, so keep a handle on the real thing and stub it out.
     real_check_scan_allowed = tracker.check_scan_allowed
@@ -59,11 +65,115 @@ def scan_env(monkeypatch):
                 if e["user_pk"] == pk and e["event_type"] == "unfollowed"]
         return rows[0]["still_following"] if rows else None
 
+    def set_confirmation(answer):
+        confirm["answer"] = answer
+
     yield type("ScanEnv", (), {
         "db": db, "tracker": tracker, "set_lists": staticmethod(set_lists),
         "flag_for": staticmethod(flag_for), "scan": staticmethod(tracker.run_scan),
         "check_scan_allowed": staticmethod(real_check_scan_allowed),
+        "set_confirmation": staticmethod(set_confirmation),
     })
+
+
+def _events_of(db, event_type):
+    return [e for e in db.get_events(limit=100) if e["event_type"] == event_type]
+
+
+def test_missing_from_listing_but_still_following_records_nothing(scan_env):
+    """One enumeration dropping a follower must not become an unfollow.
+
+    Regression: a person Instagram simply omitted from the paged follower list
+    was written down as "unfollowed" on that evidence alone. Here Instagram
+    answers that they still follow, so nothing may be recorded.
+    """
+    scan_env.set_lists(["1", "2"], [])
+    scan_env.scan()
+
+    scan_env.set_confirmation(False)   # "no, they still follow you"
+    scan_env.set_lists(["1"], [])      # @mehmet vanishes from the listing
+    result = scan_env.scan()
+
+    assert _events_of(scan_env.db, "unfollowed") == []
+    assert result["lost_followers"] == 0
+    assert result["missing_but_following"] == 1
+
+
+def test_unverifiable_absence_is_left_for_the_next_scan(scan_env):
+    """A check that cannot answer is not evidence of a departure."""
+    scan_env.set_lists(["1", "2"], [])
+    scan_env.scan()
+
+    scan_env.set_confirmation(None)    # the check failed
+    scan_env.set_lists(["1"], [])
+    result = scan_env.scan()
+
+    assert _events_of(scan_env.db, "unfollowed") == []
+    assert result["unverified"] == 1
+
+
+def test_event_carries_the_window_between_two_scans(scan_env):
+    """Instagram records no unfollow moment, so an event has to carry a span.
+
+    The lower bound is the *start* of the last completed scan before the event:
+    that scan is where the person was last seen present, and using its finish
+    time instead would exclude a departure that happened while it was running.
+    """
+    scan_env.set_lists(["1", "2"], [])
+    scan_env.scan()
+    first = scan_env.db.get_scan_history(limit=10)[0]
+
+    scan_env.set_lists(["1"], [])
+    scan_env.scan()
+
+    event = _events_of(scan_env.db, "unfollowed")[0]
+    assert event["window_start"] == first["started_at"]
+    assert event["window_start"] < event["detected_at"]
+
+
+def test_window_ignores_a_failed_scan(scan_env, monkeypatch):
+    """A scan that failed saved no snapshot, so it cannot narrow the window."""
+    scan_env.set_lists(["1", "2"], [])
+    scan_env.scan()
+    baseline = scan_env.db.get_scan_history(limit=10)[0]
+
+    # A scan that dies after creating its row: it must not become the bound.
+    failed_id = scan_env.db.create_scan()
+    scan_env.db.fail_scan(failed_id, "deneme hatasi")
+
+    scan_env.set_lists(["1"], [])
+    scan_env.scan()
+
+    event = _events_of(scan_env.db, "unfollowed")[0]
+    assert event["window_start"] == baseline["started_at"],         "basarisiz tarama araligi daraltmamali"
+
+
+def test_returning_follower_closes_the_departure(scan_env):
+    """Someone back in the follower list stops being listed as gone.
+
+    Regression: departure events were never revisited, so a person who
+    returned — or who was only ever missing by accident — stayed on the
+    "unfollowed" list for good and kept being counted.
+    """
+    scan_env.set_lists(["1", "2"], [])
+    scan_env.scan()
+
+    scan_env.set_lists(["1"], [])      # confirmed gone (fixture default)
+    scan_env.scan()
+    assert len(_events_of(scan_env.db, "unfollowed")) == 1
+    assert scan_env.db.get_dashboard_stats()["unfollowed"] == 1
+
+    scan_env.set_lists(["1", "2"], [])  # back again
+    result = scan_env.scan()
+
+    assert _events_of(scan_env.db, "unfollowed") == [], "kapanan kayıt listede kalmamalı"
+    assert scan_env.db.get_dashboard_stats()["unfollowed"] == 0
+    assert result["returned"] == 1
+    # The row itself survives for the history.
+    history = [e for e in scan_env.db.get_events(limit=100, include_returned=True)
+               if e["event_type"] == "unfollowed"]
+    assert len(history) == 1
+    assert history[0]["returned_at"]
 
 
 def test_still_following_clears_after_unfollowing_on_the_phone(scan_env):
@@ -158,3 +268,67 @@ def test_scan_cooldown(scan_env, monkeypatch):
         conn.execute("UPDATE scan_history SET completed_at=?",
                      ((datetime.utcnow() - timedelta(minutes=25)).isoformat(),))
     check()
+
+
+def test_unverified_absence_is_recorded_once_it_can_be_confirmed(scan_env):
+    """"Left for the next scan" has to mean the next scan looks again.
+
+    Regression: an absence that could not be verified was skipped, but the
+    snapshot was still saved without the person — so the next scan compared
+    two lists that both lacked them, saw no change, and the departure was
+    never recorded at all.
+    """
+    scan_env.set_lists(["1", "2"], [])
+    scan_env.scan()
+
+    scan_env.set_confirmation(None)          # the check cannot answer
+    scan_env.set_lists(["1"], [])
+    scan_env.scan()
+    assert _events_of(scan_env.db, "unfollowed") == []
+
+    scan_env.set_confirmation(True)          # now Instagram confirms it
+    scan_env.scan()
+    assert len(_events_of(scan_env.db, "unfollowed")) == 1
+
+
+def test_listing_dropout_does_not_return_as_a_new_follower(scan_env):
+    """Someone who never left must not be announced as a new follower.
+
+    Regression: a person Instagram confirmed still follows was kept out of the
+    events, but not out of the snapshot. When the listing included them again
+    the next scan saw them "arrive" and recorded a new_follower event.
+    """
+    scan_env.set_lists(["1", "2"], [])
+    scan_env.scan()
+
+    scan_env.set_confirmation(False)         # "they still follow you"
+    scan_env.set_lists(["1"], [])            # but the listing dropped them
+    scan_env.scan()
+
+    scan_env.set_lists(["1", "2"], [])       # the listing has them again
+    scan_env.scan()
+
+    assert _events_of(scan_env.db, "new_follower") == []
+
+
+def test_window_starts_at_the_last_real_sighting(scan_env):
+    """A scan that could not verify someone kept them without seeing them.
+
+    That row exists only so the next scan looks again; it is not a sighting.
+    Taking it as one would start the window after the moment the person may
+    already have been gone, and the interface would show a span that is too
+    short to contain the truth.
+    """
+    scan_env.set_lists(["1", "2"], [])
+    scan_env.scan()
+    sighting = scan_env.db.get_scan_history(limit=10)[0]
+
+    scan_env.set_confirmation(None)          # absent, and cannot be checked
+    scan_env.set_lists(["1"], [])
+    scan_env.scan()
+
+    scan_env.set_confirmation(True)          # absent, and confirmed gone
+    scan_env.scan()
+
+    event = _events_of(scan_env.db, "unfollowed")[0]
+    assert event["window_start"] == sighting["started_at"]

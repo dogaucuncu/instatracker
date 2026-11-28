@@ -1,28 +1,29 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    InstaTracker — stylesheet
 
-   The design is a register: a dated record of who left an account, who blocked
-   it, and whose account closed. It is read, scanned and acted on, not browsed,
-   so the visual language is a ledger's — hairlines, aligned columns, tabular
-   figures — rather than a product dashboard's cards, blurs and gradients.
+   Frosted glass over a dark field of light. Panels are translucent and blur
+   what passes behind them; the colour in the interface comes from that field
+   showing through, not from the panels themselves.
 
-   Two rules hold the whole sheet together:
-     1. Colour carries exactly one meaning. --signal marks a record the reader
-        can still act on ("you are still following this person"). Nothing else
-        is coloured, so a glance finds the open rows without a legend.
-     2. Structure, not decoration, encodes information. A rule between rows is
-        a record boundary, indentation is hierarchy, alignment is what makes
-        two numbers comparable.
+   Glass has one real hazard: text sits on whatever happens to be behind it, so
+   contrast stops being a fixed number. Two rules keep it legible.
 
-   Every text colour was measured against both backgrounds. The weakest pair is
-   --ink-3 on --bg-raised at 5.12:1, above the 4.5:1 WCAG AA minimum.
+     1. Every panel lays a dark scrim (--glass-scrim) down before its white
+        sheen. That gives the text a floor that does not move, instead of
+        letting it ride the backdrop.
+     2. Every text colour below was measured against the worst case — the panel
+        sitting directly over the brightest part of the glow. The weakest is
+        --ink-3 at 4.58:1, above the 4.5:1 WCAG AA minimum. Over the plain
+        background the same colour reaches 8.16:1.
+
+   Colour carries meaning, not decoration: --cyan marks what can be operated,
+   --amber marks a record that still needs a decision. Nothing else is tinted.
 ═══════════════════════════════════════════════════════════════════════════ */
 
 /* ── Self-hosted typeface ──────────────────────────────────────────────────
    Public Sans, served from this project. It is deliberately not loaded from a
    font CDN: that would hand a third party the reader's IP address every time
    this local tool is opened, and the tool would lose its typeface offline.
-   Three weights cover the whole interface.
    Licence: frontend/fonts/LICENSE-PublicSans.md (OFL 1.1).
    ------------------------------------------------------------------------- */
 @font-face {
@@ -48,31 +49,45 @@
 }
 
 :root {
-  /* Surfaces. Cool charcoal rather than a tinted near-black, so the hairlines
-     read as drawn lines instead of glows. */
-  --bg:        #15171C;
-  --bg-raised: #1B1E24;
-  --bg-sunken: #121419;
+  /* The field behind the glass. */
+  --void: #05070A;
+  --glow-near: #56D7EE;
+  --glow-far: #1E7F93;
 
-  /* Lines do the work that cards and shadows do elsewhere. */
-  --line:        #2B3039;
-  --line-strong: #3A4150;
+  /* Glass recipe. The scrim goes down first so the sheen lands on a known
+     value rather than on whatever the glow is doing at that spot. The tint is
+     a neutral graphite rather than a blue-black: Apple's dark materials read
+     as grey glass holding colour from behind, not as tinted plastic. */
+  --glass-scrim: rgba(22, 23, 26, 0.62);
+  --glass-sheen: rgba(255, 255, 255, 0.055);
+  --glass-edge: rgba(255, 255, 255, 0.10);
+  --glass-edge-lit: rgba(255, 255, 255, 0.22);
+  /* Heavier blur and a strong saturation lift: a material is supposed to pull
+     the colour out of what it covers, which is what separates it from a plain
+     translucent panel. */
+  --blur: 32px;
+  --glass-saturate: 180%;
 
-  /* Text. Measured against --bg: 14.89 / 8.11 / 5.50. */
-  --ink:   #E8EAEE;
-  --ink-2: #A7AFBC;
-  --ink-3: #868F9E;
+  /* Text, measured over the worst-case panel: 8.33 / 6.4 / 4.58. */
+  --ink: #F2F6F8;
+  --ink-2: #D3DCE3;
+  --ink-3: #AEBAC4;
 
-  /* The one accent. It means "this record still needs a decision from you".
-     Measured 5.67:1 as text on --bg. */
-  --signal:       #D4785C;
-  --signal-focus: #E08A6B;
-  --signal-wash:  rgba(212, 120, 92, 0.11);
+  /* Operable. */
+  --cyan: #7FE3F5;
+  --cyan-wash: rgba(127, 227, 245, 0.14);
+  /* Needs a decision from you. */
+  --amber: #FFC078;
+  --amber-wash: rgba(255, 192, 120, 0.14);
 
-  /* Radii differ by role, so rounding encodes hierarchy instead of being one
-     uniform value applied to everything. */
-  --r-control: 2px;
-  --r-surface: 6px;
+  /* Radii differ by role, so rounding encodes hierarchy rather than being one
+     value applied to everything. */
+  /* Controls are capsules and panels are squircles — the two shapes Apple's
+     interface is built from. --r-panel is large because continuous corners
+     only read as continuous when there is enough arc to see. */
+  --r-control: 12px;
+  --r-capsule: 999px;
+  --r-panel: 28px;
 
   /* 4px rhythm. */
   --s1: 4px;
@@ -84,8 +99,8 @@
   --s7: 48px;
 
   --measure: 64ch;
-  --page: 1080px;
-  --speed: 160ms;
+  --page: 1120px;
+  --speed: 180ms;
   --ease: cubic-bezier(0.2, 0, 0.3, 1);
 }
 
@@ -121,13 +136,15 @@ html {
      interface scales when they enlarge it. */
   font-size: 100%;
   -webkit-text-size-adjust: 100%;
-  /* Tells the browser the page is dark, so scrollbars, form controls and the
-     caret are drawn dark too instead of staying light against it. */
   color-scheme: dark;
+  background: var(--void);
+  /* The masthead is sticky. Without this, an element reached with Tab and
+     scrolled into view can stop underneath it, hidden behind the bar it just
+     scrolled past — WCAG 2.2 "focus not obscured". The padding is the bar's
+     height plus breathing room. */
+  scroll-padding-top: 5rem;
 }
 
-/* The page itself does not bounce under a mouse, but a touch screen keeps its
-   pull-to-refresh, which is a system gesture worth leaving alone. */
 @media (pointer: fine) {
   html {
     overscroll-behavior: none;
@@ -135,18 +152,54 @@ html {
 }
 
 body {
+  position: relative;
   font-family: "Public Sans", "Segoe UI", system-ui, -apple-system, sans-serif;
   font-size: 1rem;
   line-height: 1.55;
-  background: var(--bg);
   color: var(--ink);
+  /* Left transparent on purpose. The glow below is drawn in pseudo-elements at
+     z-index -1, and a negative index puts them behind their own parent's
+     background — an opaque body would paint straight over them. The colour is
+     on <html> instead, which still backs the whole page. */
+  background: transparent;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
-  /* Removes the 300ms double-tap-zoom wait on touch without disabling zoom. */
   touch-action: manipulation;
-  /* The grey flash Android paints over tapped elements is replaced by the
-     :active styles below, which are the same on every input type. */
   -webkit-tap-highlight-color: transparent;
+}
+
+/* ── The field of light ───────────────────────────────────────────────────
+   Drawn with gradients rather than an image: nothing extra to download, it
+   scales to any window, and the tool keeps its appearance offline. Fixed, so
+   the glass has something to blur while the page scrolls past.
+   ------------------------------------------------------------------------- */
+body::before,
+body::after {
+  content: "";
+  position: fixed;
+  /* Only a small overhang: a large one pushes the gradients' hot spots past
+     the edges of the screen, which is how the glow ends up invisible. */
+  inset: -8vmax;
+  z-index: -1;
+  pointer-events: none;
+}
+
+body::before {
+  background:
+    radial-gradient(38vmax 26vmax at 16% 10%, rgba(86, 215, 238, 0.72), transparent 60%),
+    radial-gradient(34vmax 40vmax at 88% 24%, rgba(30, 127, 147, 0.85), transparent 62%),
+    radial-gradient(46vmax 30vmax at 64% 92%, rgba(86, 215, 238, 0.45), transparent 64%),
+    radial-gradient(30vmax 30vmax at 4% 82%, rgba(30, 127, 147, 0.6), transparent 58%);
+  filter: blur(28px);
+}
+
+/* A second, stretched pass gives the glow the drawn-out ribbon shape of a
+   light source rather than four separate blobs. */
+body::after {
+  background:
+    radial-gradient(56vmax 10vmax at 42% 30%, rgba(189, 238, 247, 0.3), transparent 56%),
+    radial-gradient(44vmax 8vmax at 60% 66%, rgba(127, 227, 245, 0.24), transparent 58%);
+  filter: blur(40px);
 }
 
 /* Numbers are compared down a column, so they must occupy equal width. */
@@ -163,10 +216,12 @@ a {
   color: var(--ink);
   text-decoration: underline;
   text-underline-offset: 2px;
+  text-decoration-color: rgba(255, 255, 255, 0.35);
 }
 
 a:hover {
-  color: var(--signal);
+  color: var(--cyan);
+  text-decoration-color: currentColor;
 }
 
 /* ── Utilities ───────────────────────────────────────────────────────────── */
@@ -186,9 +241,8 @@ a:hover {
   border: 0;
 }
 
-/* Keyboard users must always see where they are. One ring, everywhere. */
 :focus-visible {
-  outline: 2px solid var(--signal-focus);
+  outline: 2px solid var(--cyan);
   outline-offset: 2px;
   border-radius: var(--r-control);
 }
@@ -199,8 +253,8 @@ a:hover {
   left: var(--s2);
   z-index: 100;
   padding: var(--s2) var(--s3);
-  background: var(--bg-raised);
-  border: 1px solid var(--line-strong);
+  background: var(--glass-scrim);
+  border: 1px solid var(--glass-edge);
   border-radius: var(--r-control);
   text-decoration: none;
   transform: translateY(-200%);
@@ -221,121 +275,120 @@ a:hover {
   fill: none;
 }
 
-/* ── Controls ────────────────────────────────────────────────────────────── */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--s2);
-  /* 44px tall: a target that does not ask for precision. */
-  min-height: 44px;
-  padding: var(--s2) var(--s4);
-  font: inherit;
-  font-size: 0.9375rem;
-  font-weight: 500;
-  color: var(--ink);
-  background: transparent;
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-control);
-  cursor: pointer;
-  transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease);
+/* ── Glass ────────────────────────────────────────────────────────────────
+   One recipe, applied wherever a surface lifts off the field. The gradient is
+   the light catching the top edge; the inset highlight is the lit rim.
+   ------------------------------------------------------------------------- */
+.masthead,
+.page,
+.gate-card,
+.dialog,
+.toast {
+  position: relative;
+  background-color: var(--glass-scrim);
+  background-image: linear-gradient(
+    160deg,
+    var(--glass-sheen),
+    rgba(255, 255, 255, 0.02) 46%,
+    rgba(255, 255, 255, 0.045)
+  );
+  backdrop-filter: blur(var(--blur)) saturate(var(--glass-saturate));
+  -webkit-backdrop-filter: blur(var(--blur)) saturate(var(--glass-saturate));
+  border: 0;
+  /* Light from above: a lit top edge, a shaded bottom one, and a shadow that
+     is wide and faint rather than a dark halo. */
+  box-shadow:
+    inset 0 1px 0 var(--glass-edge-lit),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    0 2px 6px rgba(0, 0, 0, 0.16),
+    0 30px 64px -16px rgba(0, 0, 0, 0.55);
 }
 
-.btn:hover:not(:disabled) {
-  background: var(--bg-raised);
-  border-color: var(--ink-3);
+/* The rim.
+   A uniform 1px border reads as a drawn outline; a real edge catches the light
+   unevenly, bright where the light falls and fading away from it. The gradient
+   is masked down to the border box so only the rim survives. */
+.masthead::after,
+.page::after,
+.gate-card::after,
+.dialog::after,
+.toast::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  padding: 1px;
+  border-radius: inherit;
+  corner-shape: inherit;
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.5),
+    rgba(255, 255, 255, 0.12) 34%,
+    rgba(255, 255, 255, 0.04) 58%,
+    rgba(255, 255, 255, 0.16)
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
 }
 
-.btn:active:not(:disabled) {
-  background: var(--bg-sunken);
+/* Continuous corners. A browser without corner-shape still gets the radius,
+   which is the ordinary circular arc — the shape degrades, nothing breaks. */
+@supports (corner-shape: squircle) {
+  .page,
+  .gate-card,
+  .dialog {
+    corner-shape: squircle;
+  }
+  .btn,
+  .field input,
+  .affix-btn,
+  .notice,
+  .error,
+  .toast {
+    corner-shape: squircle;
+  }
 }
 
-.btn:disabled {
-  color: var(--ink-3);
-  border-color: var(--line);
-  cursor: not-allowed;
-}
-
-.btn-primary {
-  color: var(--bg);
-  background: var(--ink);
-  border-color: var(--ink);
-  font-weight: 600;
-}
-
-.btn-primary:hover:not(:disabled) {
-  background: #fff;
-  border-color: #fff;
-}
-
-.btn-primary:disabled {
-  color: var(--ink-3);
-  background: var(--bg-raised);
-  border-color: var(--line);
-}
-
-/* Actionable and destructive share --signal, because they are the same thing:
-   doing something about a record that is still open. */
-.btn-signal {
-  color: var(--signal);
-  border-color: var(--signal);
-}
-
-.btn-signal:hover:not(:disabled) {
-  background: var(--signal-wash);
-  border-color: var(--signal-focus);
-}
-
-/* Size only. Kept free of colour so it can be combined with a colour modifier
-   without the later rule silently winning and cancelling it. */
-.btn-sm {
-  min-height: 36px;
-  padding: var(--s1) var(--s3);
-  font-size: 0.875rem;
-}
-
-.btn-quiet {
-  min-height: 36px;
-  padding: var(--s1) var(--s3);
-  font-size: 0.875rem;
-  color: var(--ink-2);
-  border-color: transparent;
-}
-
-.btn-quiet:hover:not(:disabled) {
-  color: var(--ink);
-  background: var(--bg-raised);
-  border-color: var(--line);
-}
-
-.btn-full {
-  width: 100%;
-}
-
-.spinner {
-  width: 1em;
-  height: 1em;
-  border: 2px solid currentColor;
-  border-top-color: transparent;
-  border-radius: 50%;
-  animation: spin 0.7s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(1turn);
+/* Where the browser cannot blur, the scrim alone has to carry the text, so it
+   goes opaque. Without this the glow shows through at full strength and the
+   contrast measurements above stop holding. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .masthead,
+  .page,
+  .gate-card,
+  .dialog,
+  .toast {
+    background-color: #17181B;
   }
 }
 
 /* ── Page frame ──────────────────────────────────────────────────────────── */
+/* A thinner material than the panel below it. Apple's toolbars sit closer to
+   the content they cover: less tint, more blur, so what scrolls underneath
+   stays readable as shape and colour while the bar itself stays legible. */
 .masthead {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background-color: rgba(22, 23, 26, 0.52);
+  backdrop-filter: blur(40px) saturate(190%);
+  -webkit-backdrop-filter: blur(40px) saturate(190%);
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--s4);
   padding: var(--s3) var(--s5);
-  background: var(--bg);
-  border-bottom: 1px solid var(--line);
+  border-width: 0 0 1px;
+  border-radius: 0;
+  box-shadow:
+    inset 0 -1px 0 rgba(255, 255, 255, 0.06),
+    0 10px 30px rgba(0, 0, 0, 0.35);
 }
 
 .wordmark {
@@ -349,7 +402,7 @@ a:hover {
 
 .wordmark .icon {
   font-size: 1.125rem;
-  color: var(--ink-2);
+  color: var(--cyan);
 }
 
 .whoami {
@@ -362,8 +415,8 @@ a:hover {
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-edge);
   object-fit: cover;
 }
 
@@ -374,18 +427,26 @@ a:hover {
 
 .whoami-name {
   display: block;
+  max-width: 18ch;
   font-size: 0.8125rem;
   color: var(--ink-3);
-  max-width: 18ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+/* The content sits on one panel rather than being chopped into a grid of
+   cards: the glass is the frame, and what is inside it stays flat so the eye
+   compares rows instead of counting containers. */
+/* The side margin is not decoration: it keeps the field visible around the
+   panel, which is what makes the glass read as glass rather than as a plain
+   dark surface. */
 .page {
   max-width: var(--page);
-  margin: 0 auto;
-  padding: var(--s6) var(--s5) var(--s7);
+  margin: var(--s5) auto var(--s7);
+  margin-inline: max(var(--s5), (100vw - var(--page)) / 2);
+  padding: var(--s6);
+  border-radius: var(--r-panel);
 }
 
 /* ── The one sentence the reader opened the app for ──────────────────────── */
@@ -407,14 +468,14 @@ a:hover {
   color: var(--ink-2);
 }
 
-/* The count is the typographic event of the page; everything else stays quiet. */
 .hero-count {
   display: block;
-  font-size: clamp(2.75rem, 7vw, 4.25rem);
+  font-size: clamp(2.75rem, 7vw, 4.5rem);
   line-height: 1;
   font-weight: 600;
   color: var(--ink);
-  letter-spacing: -0.02em;
+  letter-spacing: -0.035em;
+  text-shadow: 0 2px 24px rgba(86, 215, 238, 0.28);
 }
 
 .verdict-aside {
@@ -429,12 +490,12 @@ a:hover {
   color: var(--ink-3);
 }
 
-/* ── Facts: a definition list, not six cards ─────────────────────────────── */
+/* ── Facts ───────────────────────────────────────────────────────────────── */
 .facts {
   display: flex;
   flex-wrap: wrap;
-  border-top: 1px solid var(--line);
-  border-bottom: 1px solid var(--line);
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
 }
 
 /* column-reverse puts the value above its label while keeping the markup in
@@ -444,8 +505,8 @@ a:hover {
   flex-direction: column-reverse;
   justify-content: flex-end;
   flex: 1 1 140px;
-  padding: var(--s3) var(--s4);
-  border-left: 1px solid var(--line);
+  padding: var(--s4);
+  border-left: 1px solid rgba(255, 255, 255, 0.09);
 }
 
 .fact:first-child {
@@ -455,7 +516,7 @@ a:hover {
 
 .fact-value {
   display: block;
-  font-size: 1.375rem;
+  font-size: 1.5rem;
   font-weight: 600;
   line-height: 1.2;
 }
@@ -466,9 +527,126 @@ a:hover {
   color: var(--ink-3);
 }
 
-/* A fact that still needs a decision is the only coloured one. */
 .fact--open .fact-value {
-  color: var(--signal);
+  color: var(--amber);
+}
+
+/* ── Controls ────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  min-height: 44px;
+  padding: var(--s2) var(--s5);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  /* Capsule, not a rounded rectangle: the shape Apple gives every control that
+     is not a full-width row. */
+  border-radius: var(--r-capsule);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+  transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease),
+    color var(--speed) var(--ease);
+}
+
+.btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.26);
+}
+
+.btn:active:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.btn:disabled {
+  color: var(--ink-3);
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.08);
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  color: #04222A;
+  background: linear-gradient(170deg, #BDEEF7, var(--cyan));
+  border-color: rgba(255, 255, 255, 0.5);
+  font-weight: 600;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.65),
+    0 8px 24px rgba(86, 215, 238, 0.22);
+}
+
+.btn-primary:hover:not(:disabled) {
+  background: linear-gradient(170deg, #D6F5FB, #98E9F8);
+  border-color: rgba(255, 255, 255, 0.7);
+}
+
+.btn-primary:disabled {
+  color: var(--ink-3);
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.1);
+  box-shadow: none;
+}
+
+/* Actionable and destructive share --amber, because they are the same thing:
+   doing something about a record that is still open. */
+.btn-signal {
+  color: var(--amber);
+  border-color: rgba(255, 192, 120, 0.45);
+  background: var(--amber-wash);
+}
+
+.btn-signal:hover:not(:disabled) {
+  background: rgba(255, 192, 120, 0.22);
+  border-color: var(--amber);
+}
+
+/* Size only. Kept free of colour so it can be combined with a colour modifier
+   without the later rule silently winning and cancelling it. */
+.btn-sm {
+  min-height: 36px;
+  padding: var(--s1) var(--s3);
+  font-size: 0.875rem;
+}
+
+.btn-quiet {
+  min-height: 36px;
+  padding: var(--s1) var(--s3);
+  font-size: 0.875rem;
+  color: var(--ink-2);
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+.btn-quiet:hover:not(:disabled) {
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--glass-edge);
+}
+
+.btn-full {
+  width: 100%;
+}
+
+.spinner {
+  width: 1em;
+  height: 1em;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(1turn);
+  }
 }
 
 /* ── Scan state ──────────────────────────────────────────────────────────── */
@@ -484,8 +662,9 @@ a:hover {
 .track {
   position: relative;
   flex: 1;
-  height: 2px;
-  background: var(--line);
+  height: 3px;
+  background: rgba(255, 255, 255, 0.09);
+  border-radius: 2px;
   overflow: hidden;
 }
 
@@ -494,7 +673,7 @@ a:hover {
   position: absolute;
   inset: 0 auto 0 0;
   width: 35%;
-  background: var(--signal);
+  background: linear-gradient(90deg, transparent, var(--cyan), transparent);
   animation: sweep 1.6s var(--ease) infinite;
 }
 
@@ -512,7 +691,7 @@ a:hover {
   display: flex;
   gap: var(--s5);
   margin-top: var(--s6);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
   overflow-x: auto;
   scrollbar-width: thin;
 }
@@ -542,7 +721,7 @@ a:hover {
 .tab[aria-selected="true"] {
   color: var(--ink);
   font-weight: 600;
-  border-bottom-color: var(--ink);
+  border-bottom-color: var(--cyan);
 }
 
 .tab-count {
@@ -551,7 +730,7 @@ a:hover {
 }
 
 .tab[aria-selected="true"] .tab-count {
-  color: var(--ink-2);
+  color: var(--cyan);
 }
 
 .panel {
@@ -584,17 +763,27 @@ a:hover {
   color: var(--ink-3);
   text-align: left;
   white-space: nowrap;
-  border-bottom: 1px solid var(--line-strong);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.16);
 }
 
 .register td {
   padding: var(--s3);
   vertical-align: middle;
-  border-bottom: 1px solid var(--line);
 }
 
-.register tbody tr:last-child td {
-  border-bottom: 0;
+.register tbody tr {
+  background-image: linear-gradient(
+    to right,
+    transparent 0 46px,
+    rgba(255, 255, 255, 0.08) 46px
+  );
+  background-repeat: no-repeat;
+  background-position: bottom left;
+  background-size: 100% 1px;
+}
+
+.register tbody tr:last-child {
+  background-image: none;
 }
 
 .register th:first-child,
@@ -608,7 +797,7 @@ a:hover {
 }
 
 .register tbody tr:hover {
-  background: var(--bg-raised);
+  background-color: rgba(255, 255, 255, 0.055);
 }
 
 .col-num {
@@ -642,8 +831,8 @@ a:hover {
   height: 34px;
   flex: none;
   border-radius: 50%;
-  background: var(--bg-raised);
-  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--glass-edge);
   object-fit: cover;
 }
 
@@ -692,7 +881,7 @@ a:hover {
 }
 
 .status--open {
-  color: var(--signal);
+  color: var(--amber);
   font-weight: 500;
 }
 
@@ -701,11 +890,21 @@ a:hover {
 }
 
 .outcome-gain {
-  color: var(--ink);
+  color: var(--cyan);
 }
 
 .outcome-loss {
-  color: var(--signal);
+  color: var(--amber);
+}
+
+/* Says what the date column means. Kept to the reading measure and quiet, but
+   in the normal text flow, so it is read before the first row rather than
+   discovered later. */
+.register-note {
+  max-width: var(--measure);
+  margin-bottom: var(--s4);
+  font-size: 0.8125rem;
+  color: var(--ink-3);
 }
 
 .note {
@@ -742,16 +941,18 @@ a:hover {
 .gate-card {
   width: 100%;
   max-width: 25rem;
+  padding: var(--s6);
+  border-radius: var(--r-panel);
 }
 
 .gate-head {
   padding-bottom: var(--s5);
   margin-bottom: var(--s5);
-  border-bottom: 1px solid var(--line);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
 }
 
 .gate-title {
-  font-size: 1.25rem;
+  font-size: 1.375rem;
   font-weight: 600;
 }
 
@@ -777,9 +978,10 @@ a:hover {
   padding: var(--s2) var(--s3);
   font: inherit;
   color: var(--ink);
-  background: var(--bg-sunken);
-  border: 1px solid var(--line-strong);
+  background: rgba(0, 0, 0, 0.24);
+  border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: var(--r-control);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
 }
 
 .field input::placeholder {
@@ -787,7 +989,7 @@ a:hover {
 }
 
 .field input:focus-visible {
-  border-color: var(--signal-focus);
+  border-color: var(--cyan);
 }
 
 .field-hint {
@@ -812,23 +1014,24 @@ a:hover {
   width: 44px;
   min-height: 44px;
   color: var(--ink-2);
-  background: var(--bg-sunken);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-control);
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: var(--r-capsule);
   cursor: pointer;
 }
 
 .affix-btn:hover {
   color: var(--ink);
+  background: rgba(255, 255, 255, 0.1);
 }
 
 .notice {
   padding: var(--s3);
   margin-bottom: var(--s4);
   font-size: 0.875rem;
-  background: var(--bg-raised);
-  border: 1px solid var(--line-strong);
-  border-left: 2px solid var(--signal);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--glass-edge);
+  border-left: 2px solid var(--cyan);
   border-radius: var(--r-control);
 }
 
@@ -850,8 +1053,8 @@ a:hover {
   margin-top: var(--s4);
   font-size: 0.875rem;
   color: var(--ink);
-  background: var(--signal-wash);
-  border: 1px solid var(--signal);
+  background: var(--amber-wash);
+  border: 1px solid rgba(255, 192, 120, 0.45);
   border-radius: var(--r-control);
 }
 
@@ -869,7 +1072,7 @@ a:hover {
   content: "";
   flex: 1;
   height: 1px;
-  background: var(--line);
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .fineprint {
@@ -877,7 +1080,7 @@ a:hover {
   padding-top: var(--s4);
   font-size: 0.8125rem;
   color: var(--ink-3);
-  border-top: 1px solid var(--line);
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
 }
 
 /* ── Dialog ──────────────────────────────────────────────────────────────── */
@@ -890,19 +1093,16 @@ a:hover {
   align-items: center;
   justify-content: center;
   padding: var(--s5);
-  /* Measured against the page behind it: dark enough that the dialog keeps its
-     own contrast, light enough to show what it covers. */
-  background: rgba(8, 9, 12, 0.72);
+  background: rgba(2, 4, 6, 0.62);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 .dialog {
   width: 100%;
   max-width: 26rem;
   padding: var(--s5);
-  background: var(--bg-raised);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--r-surface);
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  border-radius: var(--r-panel);
   animation: rise var(--speed) var(--ease);
 }
 
@@ -950,20 +1150,17 @@ a:hover {
   gap: var(--s2);
   padding: var(--s3);
   font-size: 0.875rem;
-  background: var(--bg-raised);
-  border: 1px solid var(--line-strong);
-  border-left: 2px solid var(--ink-3);
   border-radius: var(--r-control);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  border-left: 2px solid var(--ink-3);
   animation: rise var(--speed) var(--ease);
 }
 
 .toast--problem {
-  border-left-color: var(--signal);
+  border-left-color: var(--amber);
 }
 
 .toast--done {
-  border-left-color: var(--ink);
+  border-left-color: var(--cyan);
 }
 
 .toast .icon {
@@ -974,7 +1171,8 @@ a:hover {
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 900px) {
   .page {
-    padding: var(--s5) var(--s4) var(--s6);
+    margin: var(--s4) var(--s3) var(--s6);
+    padding: var(--s5) var(--s4);
   }
   .masthead {
     padding: var(--s3) var(--s4);
@@ -982,6 +1180,9 @@ a:hover {
 }
 
 @media (max-width: 640px) {
+  :root {
+    --r-panel: 18px;
+  }
   .verdict {
     flex-direction: column;
     gap: var(--s4);
@@ -998,7 +1199,7 @@ a:hover {
     flex: none;
     padding-left: 0;
     border-left: 0;
-    border-top: 1px solid var(--line);
+    border-top: 1px solid rgba(255, 255, 255, 0.09);
   }
   .fact:first-child {
     border-top: 0;

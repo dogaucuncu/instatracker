@@ -1,8 +1,11 @@
 import sqlite3
 import json
+import logging
 from datetime import datetime
 from contextlib import contextmanager
 from config import DB_PATH
+
+logger = logging.getLogger(__name__)
 
 
 def get_connection():
@@ -57,7 +60,8 @@ def init_db():
                 user_pk     TEXT NOT NULL,
                 username    TEXT NOT NULL,
                 full_name   TEXT,
-                profile_pic_url TEXT
+                profile_pic_url TEXT,
+                assumed     INTEGER NOT NULL DEFAULT 0  -- 1: kept without being observed
             );
 
             -- Following snapshots (one per scan)
@@ -88,7 +92,8 @@ def init_db():
                 event_type      TEXT NOT NULL,   -- unfollowed | blocked | deactivated | new_follower | reactivated
                 still_following INTEGER NOT NULL DEFAULT 0,  -- 1 if I still follow this person
                 detected_at     TEXT NOT NULL,
-                details         TEXT             -- JSON string for extra info
+                details         TEXT,            -- JSON string for extra info
+                returned_at     TEXT             -- set when the person is back in the follower list
             );
 
             -- Scan history
@@ -106,8 +111,25 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_events_detected ON events(detected_at);
             CREATE INDEX IF NOT EXISTS idx_events_user_pk ON events(user_pk);
             CREATE INDEX IF NOT EXISTS idx_followers_snapshot ON followers(snapshot_id);
+            CREATE INDEX IF NOT EXISTS idx_followers_user ON followers(user_pk);
             CREATE INDEX IF NOT EXISTS idx_following_snapshot ON following(snapshot_id);
         """)
+
+        # Migration: returned_at was added after the first databases were
+        # created, and CREATE TABLE IF NOT EXISTS cannot add a column to a
+        # table that already exists. SQLite has no ADD COLUMN IF NOT EXISTS, so
+        # the column list is read first. Running this twice is harmless.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(events)")}
+        if "returned_at" not in columns:
+            conn.execute("ALTER TABLE events ADD COLUMN returned_at TEXT")
+            logger.info("events tablosuna returned_at sütunu eklendi")
+
+        # Same reason, for followers.assumed. Every row written before it
+        # existed was a real observation, so the default of 0 is the truth.
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(followers)")}
+        if "assumed" not in columns:
+            conn.execute("ALTER TABLE followers ADD COLUMN assumed INTEGER NOT NULL DEFAULT 0")
+            logger.info("followers tablosuna assumed sütunu eklendi")
 
 
 # ── Account ──────────────────────────────────────────────────────────────────
@@ -139,8 +161,15 @@ def clear_account():
 
 # ── Snapshots ─────────────────────────────────────────────────────────────────
 
-def save_follower_snapshot(scan_id: int, users: list[dict]) -> int:
-    """Save a follower snapshot and return its id."""
+def save_follower_snapshot(scan_id: int, users: list[dict],
+                           assumed_pks: frozenset = frozenset()) -> int:
+    """Save a follower snapshot and return its id.
+
+    assumed_pks are people kept in the snapshot without having been observed:
+    the listing omitted them and Instagram could not be asked. They stay in so
+    the next scan looks at them again, and are flagged so nothing later treats
+    that row as a sighting — see the departure window in get_events().
+    """
     with db() as conn:
         cur = conn.execute(
             "INSERT INTO follower_snapshots (scan_id, taken_at, follower_count) VALUES (?,?,?)",
@@ -148,8 +177,12 @@ def save_follower_snapshot(scan_id: int, users: list[dict]) -> int:
         )
         snapshot_id = cur.lastrowid
         conn.executemany(
-            "INSERT INTO followers (snapshot_id, user_pk, username, full_name, profile_pic_url) VALUES (?,?,?,?,?)",
-            [(snapshot_id, u["pk"], u["username"], u.get("full_name"), u.get("profile_pic_url")) for u in users]
+            "INSERT INTO followers"
+            " (snapshot_id, user_pk, username, full_name, profile_pic_url, assumed)"
+            " VALUES (?,?,?,?,?,?)",
+            [(snapshot_id, u["pk"], u["username"], u.get("full_name"),
+              u.get("profile_pic_url"), 1 if u["pk"] in assumed_pks else 0)
+             for u in users]
         )
         return snapshot_id
 
@@ -246,16 +279,74 @@ def save_event(user_pk: str, username: str, full_name: str, profile_pic_url: str
         ))
 
 
-def get_events(event_type: str = None, limit: int = 200) -> list[dict]:
+# Instagram records no unfollow event, only who follows an account right now,
+# so the moment someone left is not knowable — all this tool can honestly say is
+# "between these two scans". The lower bound is the start of the last completed
+# scan before this event, because that scan is where the person was last seen
+# present; using its completion time instead would exclude a departure that
+# happened while that scan was still running.
+#
+# Only completed scans count. A failed scan saves no snapshot, so it observed
+# nothing and cannot narrow the window — and fail_scan() stamps completed_at
+# too, which is why the status is checked rather than the timestamp alone.
+_LAST_SCAN_START = """
+    SELECT s.started_at FROM scan_history s
+     WHERE s.status = 'completed'
+       AND s.completed_at IS NOT NULL
+       AND s.completed_at < events.detected_at
+     ORDER BY s.completed_at DESC
+     LIMIT 1
+"""
+
+# For a departure the bound is narrower and has to be tied to the person: the
+# last completed scan whose snapshot really contains them. Usually that is the
+# previous scan, the same answer as above. It differs after a scan that could
+# not verify an absence — that scan kept the person in its snapshot so the next
+# one would look again, but it never saw them, and treating its row as a
+# sighting would put the start of the window after the moment they may already
+# have been gone.
+_LAST_SIGHTING_START = """
+    SELECT s.started_at FROM scan_history s
+      JOIN follower_snapshots fs ON fs.scan_id = s.id
+      JOIN followers f ON f.snapshot_id = fs.id
+     WHERE s.status = 'completed'
+       AND s.completed_at IS NOT NULL
+       AND s.completed_at < events.detected_at
+       AND f.user_pk = events.user_pk
+       AND f.assumed = 0
+     ORDER BY s.completed_at DESC
+     LIMIT 1
+"""
+
+_WINDOW_START = f"""
+    CASE WHEN events.event_type IN ('unfollowed', 'blocked', 'deactivated')
+         THEN ({_LAST_SIGHTING_START})
+         ELSE ({_LAST_SCAN_START})
+    END
+"""
+
+
+def get_events(event_type: str = None, limit: int = 200,
+               include_returned: bool = False) -> list[dict]:
+    """Events, newest first.
+
+    Departures the person has since reversed are left out by default: the lists
+    are read as the current state, so a returned follower listed under
+    "unfollowed" is simply wrong. Pass include_returned=True for the full
+    history.
+    """
+    closed = "" if include_returned else " AND returned_at IS NULL"
     with db() as conn:
         if event_type:
             rows = conn.execute(
-                "SELECT * FROM events WHERE event_type=? ORDER BY detected_at DESC LIMIT ?",
+                f"SELECT *, ({_WINDOW_START}) AS window_start FROM events"
+                f" WHERE event_type=?{closed} ORDER BY detected_at DESC LIMIT ?",
                 (event_type, limit)
             ).fetchall()
         else:
             rows = conn.execute(
-                "SELECT * FROM events ORDER BY detected_at DESC LIMIT ?",
+                f"SELECT *, ({_WINDOW_START}) AS window_start FROM events"
+                f" WHERE 1=1{closed} ORDER BY detected_at DESC LIMIT ?",
                 (limit,)
             ).fetchall()
         result = []
@@ -322,15 +413,65 @@ def sync_still_following(following_pks: set[str]) -> int:
         return changed
 
 
+# A departure is only true until the person comes back. These are the event
+# types that claim someone left; new_follower is not one of them.
+DEPARTURE_TYPES = ("unfollowed", "blocked", "deactivated")
+
+
+def sync_returned(follower_pks: set[str]) -> int:
+    """Close departure events for anyone who is in the follower list again.
+
+    Without this the lists answer "who has ever left?" while reading as "who is
+    gone right now". Someone Instagram dropped from a single enumeration, or who
+    left and came back, stayed on the list for good.
+
+    The row is kept — only stamped — so the history survives and a later
+    departure still creates its own event.
+
+    Returns the number of events closed.
+    """
+    if not follower_pks:
+        return 0
+    placeholders = ",".join("?" for _ in DEPARTURE_TYPES)
+    with db() as conn:
+        conn.execute("CREATE TEMP TABLE _current_followers (user_pk TEXT PRIMARY KEY)")
+        conn.executemany(
+            "INSERT OR IGNORE INTO _current_followers (user_pk) VALUES (?)",
+            [(pk,) for pk in follower_pks],
+        )
+        cur = conn.execute(
+            f"""
+            UPDATE events
+               SET returned_at = ?
+             WHERE returned_at IS NULL
+               AND event_type IN ({placeholders})
+               AND user_pk IN (SELECT user_pk FROM _current_followers)
+            """,
+            (datetime.utcnow().isoformat(), *DEPARTURE_TYPES),
+        )
+        changed = cur.rowcount
+        conn.execute("DROP TABLE _current_followers")
+        return changed
+
+
 def get_dashboard_stats() -> dict:
     with db() as conn:
         total_events = conn.execute("SELECT COUNT(*) as c FROM events").fetchone()["c"]
-        unfollowed = conn.execute("SELECT COUNT(*) as c FROM events WHERE event_type='unfollowed'").fetchone()["c"]
-        blocked = conn.execute("SELECT COUNT(*) as c FROM events WHERE event_type='blocked'").fetchone()["c"]
-        deactivated = conn.execute("SELECT COUNT(*) as c FROM events WHERE event_type='deactivated'").fetchone()["c"]
+        # The dashboard reports the present, so a departure the person has
+        # since reversed does not count. See sync_returned().
+        unfollowed = conn.execute(
+            "SELECT COUNT(*) as c FROM events WHERE event_type='unfollowed' AND returned_at IS NULL"
+        ).fetchone()["c"]
+        blocked = conn.execute(
+            "SELECT COUNT(*) as c FROM events WHERE event_type='blocked' AND returned_at IS NULL"
+        ).fetchone()["c"]
+        deactivated = conn.execute(
+            "SELECT COUNT(*) as c FROM events WHERE event_type='deactivated' AND returned_at IS NULL"
+        ).fetchone()["c"]
         new_followers = conn.execute("SELECT COUNT(*) as c FROM events WHERE event_type='new_follower'").fetchone()["c"]
         still_following = conn.execute(
-            "SELECT COUNT(*) as c FROM events WHERE still_following=1 AND event_type IN ('unfollowed','blocked','deactivated')"
+            "SELECT COUNT(*) as c FROM events WHERE still_following=1 AND returned_at IS NULL"
+            " AND event_type IN ('unfollowed','blocked','deactivated')"
         ).fetchone()["c"]
 
         # Latest follower count

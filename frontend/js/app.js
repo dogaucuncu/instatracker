@@ -82,15 +82,42 @@ function num(value) {
  * The database stores UTC timestamps with no timezone suffix. Appending Z tells
  * the browser to read them as UTC so they display in local time.
  */
-function when(iso, withTime = true) {
-  if (!iso) return '—';
+function parseUtc(iso) {
+  if (!iso) return null;
   let s = String(iso).replace(' ', 'T');
   if (!s.endsWith('Z') && !/[+-]\d\d:?\d\d$/.test(s)) s += 'Z';
   const d = new Date(s);
-  if (Number.isNaN(d.getTime())) return '—';
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function when(iso, withTime = true) {
+  const d = parseUtc(iso);
+  if (!d) return '—';
   const opts = { day: '2-digit', month: 'short', year: 'numeric' };
   if (withTime) Object.assign(opts, { hour: '2-digit', minute: '2-digit' });
   return d.toLocaleString('tr-TR', opts);
+}
+
+const DAY = { day: 'numeric', month: 'short', year: 'numeric' };
+const DAY_AND_TIME = { ...DAY, hour: '2-digit', minute: '2-digit' };
+
+/**
+ * The span an event happened in, as one readable range.
+ *
+ * Instagram records no moment for an unfollow — only who follows an account
+ * right now — so the most this tool can honestly say is "between the scan that
+ * last saw them and the scan that noticed". formatRange collapses what the two
+ * ends share ("20–24 Kas 2026", not "20 Kas 2026 – 24 Kas 2026"). When both ends
+ * fall on the same day the times are what tells them apart, so they are shown.
+ */
+function span(startIso, endIso) {
+  const start = parseUtc(startIso);
+  const end = parseUtc(endIso);
+  if (!end) return '—';
+  if (!start || start >= end) return 'en geç ' + end.toLocaleString('tr-TR', DAY);
+  const sameDay = start.toDateString() === end.toDateString();
+  const fmt = new Intl.DateTimeFormat('tr-TR', sameDay ? DAY_AND_TIME : DAY);
+  return fmt.formatRange(start, end);
 }
 
 function initial(name) {
@@ -183,7 +210,7 @@ $('form-login').addEventListener('submit', async (event) => {
     ($('inp-username').value ? $('inp-password') : $('inp-username')).focus();
     return;
   }
-  setBusy($('btn-login'), true, 'Giriş yapılıyor');
+  setBusy($('btn-login'), true, 'Giriş yapılıyor…');
   try {
     const res = await api.login(username, password);
     if (res.status === 'ok') enterApp(res.account);
@@ -205,7 +232,7 @@ $('form-code').addEventListener('submit', async (event) => {
     $('inp-code').focus();
     return;
   }
-  setBusy($('btn-code'), true, 'Doğrulanıyor');
+  setBusy($('btn-code'), true, 'Doğrulanıyor…');
   try {
     const res = await api.verify2fa(code);
     if (res.status === 'ok') enterApp(res.account);
@@ -219,7 +246,7 @@ $('form-code').addEventListener('submit', async (event) => {
 /** Both "I approved it" buttons ask the backend to retry the same challenge. */
 async function retryChallenge(button, label) {
   clearLoginError();
-  setBusy(button, true, 'Denetleniyor');
+  setBusy(button, true, 'Denetleniyor…');
   try {
     const res = await api.challengeRetry();
     if (res.status === 'ok') {
@@ -431,26 +458,38 @@ function personCell(person) {
   ]);
 }
 
+// What the date column means is said on screen, not only in a tooltip: a range
+// where a date is expected looks like an error unless the reason is visible.
+const LEFT_NOTE =
+  'Instagram bu anı kaydetmez. Tarih, kişinin son görüldüğü tarama ile ' +
+  'yokluğunun fark edildiği tarama arasındaki aralıktır.';
+
 const PEOPLE_COPY = {
   unfollowers: {
     caption: 'Takibini bırakanlar',
     emptyHead: 'Ayrılan yok',
     emptyBody: 'Son taramaya göre kimse takibini bırakmamış.',
+    note: LEFT_NOTE,
   },
   blockers: {
     caption: 'Engelleyenler',
     emptyHead: 'Engelleyen yok',
     emptyBody: 'Takipçi listesinden çıkıp profiline erişimini kesen kimse bulunmadı.',
+    note: LEFT_NOTE,
   },
   deactivated: {
     caption: 'Hesabını kapatanlar',
     emptyHead: 'Kapatan yok',
     emptyBody: 'Takipçilerinin hiçbiri hesabını kapatmamış ya da askıya alınmamış.',
+    note: LEFT_NOTE,
   },
   'new-followers': {
     caption: 'Yeni takipçiler',
     emptyHead: 'Yeni takipçi yok',
     emptyBody: 'Son taramadan beri yeni takipçi eklenmemiş.',
+    note:
+      'Tarih, kişinin henüz listede olmadığı son tarama ile göründüğü tarama ' +
+      'arasındaki aralıktır.',
   },
 };
 
@@ -468,14 +507,17 @@ function renderPeople(rows, kind) {
 
   const head = el('tr', {}, [
     el('th', { scope: 'col', text: 'Kişi' }),
-    el('th', { scope: 'col', text: 'Kayıt tarihi' }),
+    el('th', { scope: 'col', text: 'Ne zaman' }),
     actionable && el('th', { scope: 'col', text: 'Senin durumun' }),
     actionable && el('th', { scope: 'col', class: 'col-action', text: 'İşlem' }),
   ].filter(Boolean));
 
   const body = el('tbody');
   for (const person of rows) {
-    const cells = [personCell(person), el('td', { class: 'col-date', text: when(person.detected_at, false) })];
+    const cells = [
+      personCell(person),
+      el('td', { class: 'col-date', text: span(person.window_start, person.detected_at) }),
+    ];
 
     if (actionable) {
       if (person.still_following) {
@@ -499,11 +541,14 @@ function renderPeople(rows, kind) {
     body.append(el('tr', {}, cells));
   }
 
-  return el('div', { class: 'register-scroll' }, [
-    el('table', { class: 'register' }, [
-      el('caption', { class: 'sr-only', text: copy.caption }),
-      el('thead', {}, [head]),
-      body,
+  return el('div', {}, [
+    el('p', { class: 'register-note', text: copy.note }),
+    el('div', { class: 'register-scroll' }, [
+      el('table', { class: 'register' }, [
+        el('caption', { class: 'sr-only', text: copy.caption }),
+        el('thead', {}, [head]),
+        body,
+      ]),
     ]),
   ]);
 }
@@ -556,13 +601,13 @@ function renderHistory(rows) {
 /* ── Scan ───────────────────────────────────────────────────────────────── */
 function scanUI(running) {
   $('btn-scan').disabled = running;
-  $('btn-scan-label').textContent = running ? 'Taranıyor' : 'Şimdi tara';
+  $('btn-scan-label').textContent = running ? 'Taranıyor…' : 'Şimdi tara';
   $('scan-state').classList.toggle('hidden', !running);
 }
 
 $('btn-scan').addEventListener('click', async () => {
   scanUI(true);
-  $('scan-msg').textContent = 'Tarama başlatılıyor.';
+  $('scan-msg').textContent = 'Tarama başlatılıyor…';
   try {
     await api.startScan();
     pollScan();
@@ -584,7 +629,7 @@ function pollScan() {
       return;
     }
     if (res.status === 'running') {
-      $('scan-msg').textContent = 'Takipçi ve takip listeleri çekiliyor.';
+      $('scan-msg').textContent = 'Takipçi ve takip listeleri çekiliyor…';
       return;
     }
     stopPolling();
@@ -664,7 +709,7 @@ $('btn-dialog-confirm').addEventListener('click', async () => {
   if (!state.pendingUnfollow) return;
   const { pk, username } = state.pendingUnfollow;
   const button = $('btn-dialog-confirm');
-  setBusy(button, true, 'Bırakılıyor');
+  setBusy(button, true, 'Bırakılıyor…');
   try {
     await api.unfollowUser(pk, username);
     closeDialog();

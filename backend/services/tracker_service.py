@@ -77,14 +77,12 @@ def _reject_empty_fetch(label: str, fetched: list, previous_loader) -> None:
 
 def run_scan() -> dict:
     """
-    Full scan:
+    Full scan, in two halves: everything that asks Instagram, then everything
+    that writes.
     1. Fetch current followers + following
-    2. Save snapshots
-    3. Compare with previous follower snapshot
-    4. Categorize lost users (unfollowed / blocked / deactivated)
-    5. Cross-check with following list → still_following flag
-    6. Detect new followers
-    7. Persist events
+    2. Compare with the previous follower snapshot
+    3. Work out why each missing person is missing (per-person checks)
+    4. Save snapshots, refresh flags, record events
     Returns a summary dict.
     """
     # Enforced here rather than only at the call sites, so no entry point can
@@ -128,21 +126,10 @@ def run_scan() -> dict:
         _reject_empty_fetch("takipçi", current_followers, db.get_latest_follower_snapshot_users)
         _reject_empty_fetch("takip edilen", current_following, db.get_latest_following_snapshot_users)
 
-        # ── 3. Save new snapshots ──────────────────────────────────────────
-        db.save_follower_snapshot(scan_id, current_followers)
-        db.save_following_snapshot(scan_id, current_following)
-
-        # ── 3b. Re-derive still_following for every past event ─────────────
-        # Step 5 below only touches people who left the follower list during
-        # *this* scan, so an old event would otherwise keep its original flag
-        # forever.
-        changed = db.sync_still_following(current_following_pks)
-        if changed:
-            logger.info(
-                "[Scan %d] Refreshed still_following on %d event(s)", scan_id, changed
-            )
-
         if is_first_scan:
+            db.save_follower_snapshot(scan_id, current_followers)
+            db.save_following_snapshot(scan_id, current_following)
+            db.sync_still_following(current_following_pks)
             logger.info("[Scan %d] First scan — baseline created, no comparison possible yet.", scan_id)
             db.complete_scan(scan_id, 0, 0)
             return {
@@ -154,7 +141,7 @@ def run_scan() -> dict:
                 "message": "İlk tarama tamamlandı! Takipçi listesi kaydedildi. Bir sonraki taramada değişiklikler tespit edilecek.",
             }
 
-        # ── 4. Detect changes ──────────────────────────────────────────────
+        # ── 3. Detect changes ──────────────────────────────────────────────
         previous_follower_pks = {u.get("pk") or u.get("user_pk") for u in previous_followers}
         previous_follower_map = {u.get("pk") or u.get("user_pk"): u for u in previous_followers}
         current_follower_map = {u["pk"]: u for u in current_followers}
@@ -164,73 +151,153 @@ def run_scan() -> dict:
 
         logger.info("[Scan %d] Lost: %d | New: %d", scan_id, len(lost_pks), len(new_pks))
 
-        # ── 5. Process lost followers ──────────────────────────────────────
+        # ── 4. Decide what each absence means ──────────────────────────────
+        # Observe first, write afterwards. Nothing is stored until every
+        # request to Instagram has answered, so a throttle or a crash halfway
+        # through the checks leaves the database as it was, and the next scan
+        # compares against the same baseline and meets the same people again.
+        # Writing the snapshot first used to make a half-finished scan lose
+        # whoever it had not reached yet.
+        departures = []   # (user, event_type, status): to be recorded
+        still_here = []   # Instagram confirmed they follow: kept as observed
+        undecided = []    # the check could not answer: kept, flagged as assumed
         for pk in lost_pks:
             user = previous_follower_map[pk]
             username = user["username"]
-            full_name = user.get("full_name", "")
-            profile_pic_url = user.get("profile_pic_url")
 
-            # Determine why they're gone
             status = ig.check_user_status(pk, username)
-
             if status == "deactivated":
-                event_type = "deactivated"
-            elif status == "blocked":
-                event_type = "blocked"
-            else:
-                event_type = "unfollowed"
+                departures.append((user, "deactivated", status))
+                continue
+            if status == "blocked":
+                departures.append((user, "blocked", status))
+                continue
 
-            # Cross-check: do I still follow them?
-            still_following = pk in current_following_pks
-
-            # Save event (skip if identical event was already recorded today)
-            if not db.event_exists_today(pk, event_type):
-                db.save_event(
-                    user_pk=pk,
-                    username=username,
-                    full_name=full_name,
-                    profile_pic_url=profile_pic_url,
-                    event_type=event_type,
-                    still_following=still_following,
-                    details={"status_check": status},
-                )
-                events_created += 1
+            # The account is healthy and simply absent from the listing. That
+            # is the one case where a single missed page looks exactly like an
+            # unfollow, so ask Instagram outright before writing a record the
+            # interface will present as fact.
+            confirmed = ig.confirms_unfollow(pk, username)
+            if confirmed is False:
+                still_here.append(user)
                 logger.info(
-                    "[Scan %d] [%s] @%s | still_following=%s",
-                    scan_id, event_type.upper(), username, still_following
+                    "[Scan %d] @%s is missing from the listing but still follows us "
+                    "— kept in the snapshot, no event recorded", scan_id, username
                 )
-            # No `else` branch: an event recorded earlier today already had its
-            # flag refreshed by the full sync in step 3b.
+            elif confirmed is None:
+                undecided.append(user)
+                logger.warning(
+                    "[Scan %d] Could not verify @%s — kept in the snapshot, "
+                    "the next scan checks again", scan_id, username
+                )
+            else:
+                departures.append((user, "unfollowed", status))
 
-        # ── 6. Process new followers ───────────────────────────────────────
+        # ── 5. Write ───────────────────────────────────────────────────────
+        # People the listing missed but who are not known to have left stay in
+        # the snapshot. Left out, they would vanish from the baseline: the next
+        # scan would compare two lists that both lack them and never look again
+        # (an unverified departure would go unrecorded for good), and once the
+        # listing included them again they would be announced as new followers.
+        def as_follower(user):
+            return {
+                "pk": user.get("pk") or user.get("user_pk"),
+                "username": user["username"],
+                "full_name": user.get("full_name"),
+                "profile_pic_url": user.get("profile_pic_url"),
+            }
+
+        kept = [as_follower(u) for u in still_here + undecided]
+        assumed_pks = frozenset(as_follower(u)["pk"] for u in undecided)
+        db.save_follower_snapshot(scan_id, current_followers + kept, assumed_pks=assumed_pks)
+        db.save_following_snapshot(scan_id, current_following)
+
+        # Re-derive still_following for every past event: a single scan only
+        # meets the people who changed during it, so an old event would
+        # otherwise keep its original flag forever.
+        changed = db.sync_still_following(current_following_pks)
+        if changed:
+            logger.info("[Scan %d] Refreshed still_following on %d event(s)", scan_id, changed)
+
+        # Close departures for anyone who is back. Only people known to follow
+        # count: the undecided were not seen, so they cannot be said to have
+        # returned.
+        present_pks = current_follower_pks | {as_follower(u)["pk"] for u in still_here}
+        returned = db.sync_returned(present_pks)
+        if returned:
+            logger.info("[Scan %d] Closed %d departure event(s): back in the list", scan_id, returned)
+
+        for user, event_type, status in departures:
+            pk = user.get("pk") or user.get("user_pk")
+            still_following = pk in current_following_pks
+            # Skip if an identical event was already recorded today.
+            if db.event_exists_today(pk, event_type):
+                continue
+            db.save_event(
+                user_pk=pk,
+                username=user["username"],
+                full_name=user.get("full_name", ""),
+                profile_pic_url=user.get("profile_pic_url"),
+                event_type=event_type,
+                still_following=still_following,
+                details={"status_check": status},
+            )
+            events_created += 1
+            logger.info(
+                "[Scan %d] [%s] @%s | still_following=%s",
+                scan_id, event_type.upper(), user["username"], still_following
+            )
+
         for pk in new_pks:
             user = current_follower_map[pk]
-            username = user["username"]
-            full_name = user.get("full_name", "")
-            profile_pic_url = user.get("profile_pic_url")
+            if db.event_exists_today(pk, "new_follower"):
+                continue
+            db.save_event(
+                user_pk=pk,
+                username=user["username"],
+                full_name=user.get("full_name", ""),
+                profile_pic_url=user.get("profile_pic_url"),
+                event_type="new_follower",
+                still_following=pk in current_following_pks,
+            )
+            events_created += 1
 
-            if not db.event_exists_today(pk, "new_follower"):
-                db.save_event(
-                    user_pk=pk,
-                    username=username,
-                    full_name=full_name,
-                    profile_pic_url=profile_pic_url,
-                    event_type="new_follower",
-                    still_following=pk in current_following_pks,
-                )
-                events_created += 1
+        # ── 6. Complete scan ───────────────────────────────────────────────
+        # Count what was recorded, not everyone the listing missed: the two
+        # differ whenever a check cleared someone or could not answer, and the
+        # history table is read as fact.
+        unconfirmed = len(still_here)
+        unverified = len(undecided)
+        lost_recorded = len(departures)
+        db.complete_scan(scan_id, len(new_pks), lost_recorded)
 
-        # ── 7. Complete scan ───────────────────────────────────────────────
-        db.complete_scan(scan_id, len(new_pks), len(lost_pks))
+        message = (
+            f"Tarama tamamlandı. {lost_recorded} kişi takibi bıraktı, "
+            f"{len(new_pks)} yeni takipçi var."
+        )
+        if returned:
+            message += f" {returned} kişi geri döndüğü için kaydı kapatıldı."
+        if unconfirmed:
+            message += (
+                f" {unconfirmed} kişi listede görünmedi ama Instagram hâlâ takip "
+                f"ettiklerini söyledi; kayıt açılmadı."
+            )
+        if unverified:
+            message += (
+                f" {unverified} kişi doğrulanamadı; sonraki taramada yeniden "
+                f"denetlenecek."
+            )
 
         return {
             "scan_id": scan_id,
             "status": "completed",
             "new_followers": len(new_pks),
-            "lost_followers": len(lost_pks),
+            "lost_followers": lost_recorded,
+            "missing_but_following": unconfirmed,
+            "unverified": unverified,
+            "returned": returned,
             "events_created": events_created,
-            "message": f"Tarama tamamlandı! {len(lost_pks)} kişi takipten çıktı, {len(new_pks)} yeni takipçi var.",
+            "message": message,
         }
 
     except (PleaseWaitFewMinutes, ClientThrottledError, RateLimitError, FeedbackRequired) as e:

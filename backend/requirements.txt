@@ -23,10 +23,11 @@ instagrapi==3.1.0
 certifi==2026.10.23
 
 pydantic==2.13.4
-pydantic-settings==2.14.1
 python-dotenv==1.2.2
 rich==15.0.0
 click==8.4.1
-python-multipart==0.0.30
+# FastAPI only needs this for Form/File parameters, which no route here uses,
+# but it is imported on startup. 0.0.30 carried two advisories; 0.0.32 has none.
+python-multipart==0.0.32
 aiofiles==25.1.0
 pillow==12.2.0
